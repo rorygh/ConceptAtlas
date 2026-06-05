@@ -153,6 +153,47 @@
       transition: background 0.12s; flex-shrink: 0;
     }
     .fc-x:hover { background: #93c5fd; }
+    .add-chip {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 20px; height: 20px;
+      font-size: 14px; font-weight: 400; line-height: 1;
+      color: var(--accent); background: transparent;
+      border: 1.5px dashed #93c5fd; border-radius: 50%;
+      cursor: pointer; user-select: none; flex-shrink: 0;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .add-chip:hover { background: #eff6ff; border-color: var(--accent); }
+    #filter-panel {
+      display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;
+      padding: 7px 6px 2px;
+    }
+    #filter-panel[hidden] { display: none; }
+    #fp-type {
+      font-family: inherit; font-size: 11.5px;
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 3px 6px; background: var(--bg); color: var(--text);
+      cursor: pointer; outline: none; flex-shrink: 0;
+    }
+    #fp-value {
+      font-family: inherit; font-size: 11.5px;
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 3px 8px; width: 90px; background: var(--bg); color: var(--text);
+      outline: none;
+    }
+    #fp-value:focus { border-color: var(--accent); }
+    #fp-add {
+      font-family: inherit; font-size: 11px; font-weight: 600;
+      padding: 3px 10px; background: var(--accent); color: #fff;
+      border: none; border-radius: 6px; cursor: pointer; flex-shrink: 0;
+    }
+    #fp-add:hover { background: #1d4ed8; }
+    #fp-cancel {
+      font-family: inherit; font-size: 13px;
+      width: 20px; height: 20px; padding: 0; line-height: 1;
+      background: transparent; border: none; color: var(--muted);
+      cursor: pointer; border-radius: 4px;
+    }
+    #fp-cancel:hover { color: var(--text); }
   </style>
 </head>
 <body>
@@ -205,6 +246,22 @@
     <input id="search-input" type="text" autocomplete="off" spellcheck="false"
            placeholder="What do you want to learn?" />
   </div>
+  <div id="filter-panel" hidden>
+    <select id="fp-type">
+      <option value="">filter type…</option>
+      <option value="level_G">Level: Grad</option>
+      <option value="level_U">Level: Undergrad</option>
+      <option value="dept">Department (e.g. 6, 18)</option>
+      <option value="max_units">Max units</option>
+      <option value="instructor">By instructor</option>
+      <option value="has_prereqs_true">Has prerequisites</option>
+      <option value="has_prereqs_false">No prerequisites</option>
+      <option value="exclude">Exclude keyword</option>
+    </select>
+    <input id="fp-value" placeholder="value…" hidden />
+    <button id="fp-add">Add</button>
+    <button id="fp-cancel">✕</button>
+  </div>
   <div id="intent-tags"></div>
 </div>
 
@@ -252,6 +309,7 @@ let searchHitIds    = new Set(); // top-N course IDs that get labels + edges in 
 let searchHitRanks  = new Map(); // id → rank (0 = best match) for sizing
 let filterHitIds    = new Set(); // filter-mode matches — overlaid on any view
 let activeFilters   = null;     // current Filters dict when filter mode is active
+let searchTopics    = [];       // LLM-extracted topics from the last search
 
 let T   = d3.zoomIdentity;
 let sim = null;
@@ -386,8 +444,10 @@ function startGalaxy() {
     .alphaDecay(0.025)
     .on('tick', tick);
 
+  searchTopics = [];
   setHint(null);
-  setIntentTags([]);
+  intentTagsEl.innerHTML = '';
+  filterPanelEl.hidden = true;
   document.getElementById('detail').classList.remove('open');
 }
 
@@ -453,7 +513,8 @@ function startSearch(results, allScores, query, intent = null) {
     .alphaDecay(0.016)
     .on('tick', tick);
 
-  setIntentTags(intent?.topics || []);
+  searchTopics = intent?.topics || [];
+  setFilterChips(intent?.filters || {}, searchTopics);
   setHint(intent?.explanation || `${results.length} courses matched — click to explore`);
 }
 
@@ -979,6 +1040,7 @@ function applyFilter(filterIds, intent) {
   // Filter is an overlay — stays in whatever view is active (GALAXY or SELECTED).
   // If coming from radial SEARCH view, reset to GALAXY first.
   if (VIEW === 'SEARCH') startGalaxy();
+  searchTopics = [];
   filterHitIds = new Set(filterIds);
   setFilterChips(intent?.filters ?? {});
   setHint(intent?.explanation || `${filterIds.length} courses matched`);
@@ -988,7 +1050,7 @@ function applyFilter(filterIds, intent) {
 async function doSearch(q) {
   searchInput.blur();
   setHint('Searching…');
-  setIntentTags([]);
+  intentTagsEl.innerHTML = '';
   const data = await fetch('/api/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1001,7 +1063,6 @@ async function doSearch(q) {
   } else {
     filterHitIds = new Set();
     activeFilters = null;
-    setFilterChips({});
     startSearch(courses, scores, q, intent);
   }
 }
@@ -1016,18 +1077,63 @@ searchInput.addEventListener('keydown', e => {
 // HINT PILL
 // ═══════════════════════════════════════════════════════════════
 
-const hintEl      = document.getElementById('hint');
+const hintEl       = document.getElementById('hint');
 const intentTagsEl = document.getElementById('intent-tags');
+const filterPanelEl = document.getElementById('filter-panel');
+const fpType        = document.getElementById('fp-type');
+const fpValue       = document.getElementById('fp-value');
+
 function setHint(t) { hintEl.textContent = t ?? ''; hintEl.style.opacity = t ? '1' : '0'; }
-function setIntentTags(topics) {
-  intentTagsEl.innerHTML = (topics?.length)
-    ? topics.map(t => `<span class="intent-tag">${t}</span>`).join('')
-    : '';
-}
 
 const _esc = s => String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
 
-function setFilterChips(filters) {
+// ── Filter panel ──────────────────────────────────────────────────
+
+const FP_NO_VALUE = new Set(['level_G', 'level_U', 'has_prereqs_true', 'has_prereqs_false']);
+
+function toggleFilterPanel() {
+  filterPanelEl.hidden = !filterPanelEl.hidden;
+  if (!filterPanelEl.hidden) {
+    fpType.value = ''; fpValue.hidden = true; fpValue.value = ''; fpType.focus();
+  }
+}
+
+fpType.addEventListener('change', () => {
+  const needsVal = fpType.value && !FP_NO_VALUE.has(fpType.value);
+  fpValue.hidden = !needsVal;
+  fpValue.value = '';
+  if (needsVal) fpValue.focus();
+});
+
+async function submitFilterPanel() {
+  const type = fpType.value;
+  if (!type) return;
+  if (!FP_NO_VALUE.has(type) && !fpValue.value.trim()) return;
+  const val = fpValue.value.trim();
+
+  const f = activeFilters ? JSON.parse(JSON.stringify(activeFilters)) : {};
+  switch (type) {
+    case 'level_G':           f.level = 'G'; break;
+    case 'level_U':           f.level = 'U'; break;
+    case 'has_prereqs_true':  f.has_prereqs = true; break;
+    case 'has_prereqs_false': f.has_prereqs = false; break;
+    case 'dept':       f.depts            = [...(f.depts || []), val]; break;
+    case 'max_units':  f.max_units        = parseInt(val, 10); break;
+    case 'min_rating': f.min_rating       = parseFloat(val); break;
+    case 'instructor': f.instructors      = [...(f.instructors || []), val]; break;
+    case 'exclude':    f.exclude_keywords = [...(f.exclude_keywords || []), val]; break;
+  }
+
+  filterPanelEl.hidden = true;
+  await applyFilterObj(f);
+}
+
+document.getElementById('fp-add').addEventListener('click', submitFilterPanel);
+fpValue.addEventListener('keydown', e => { if (e.key === 'Enter') submitFilterPanel(); });
+document.getElementById('fp-cancel').addEventListener('click', () => { filterPanelEl.hidden = true; });
+
+// topics: shown as read-only pills when no filter constraints are active
+function setFilterChips(filters, topics = []) {
   activeFilters = filters;
   const chips = [];
   if (filters.level === 'G') chips.push({ key: 'level', label: 'grad' });
@@ -1041,13 +1147,16 @@ function setFilterChips(filters) {
   (filters.exclude_keywords  || []).forEach(k => chips.push({ key: `excl:${k}`,  label: `not "${k}"` }));
   (filters.requires_courses  || []).forEach(c => chips.push({ key: `req:${c}`,   label: `needs ${c}` }));
 
-  if (!chips.length) { intentTagsEl.innerHTML = ''; return; }
-  intentTagsEl.innerHTML = chips
-    .map(({ key, label }) =>
-      `<span class="filter-chip"><span>${_esc(label)}</span><span class="fc-x" data-key="${_esc(key)}">×</span></span>`)
-    .join('');
+  const chipsHtml = chips.length
+    ? chips.map(({ key, label }) =>
+        `<span class="filter-chip"><span>${_esc(label)}</span><span class="fc-x" data-key="${_esc(key)}">×</span></span>`
+      ).join('')
+    : topics.map(t => `<span class="intent-tag">${_esc(t)}</span>`).join('');
+
+  intentTagsEl.innerHTML = chipsHtml + `<span class="add-chip" id="fp-open" title="Add filter">+</span>`;
   intentTagsEl.querySelectorAll('.fc-x').forEach(x =>
     x.addEventListener('click', () => removeFilterChip(x.dataset.key)));
+  document.getElementById('fp-open').addEventListener('click', toggleFilterPanel);
 }
 
 async function removeFilterChip(key) {
@@ -1061,17 +1170,31 @@ async function removeFilterChip(key) {
   else if (key.startsWith('instr:')) f.instructors       = (f.instructors || []).filter(i => i !== key.slice(6));
   else if (key.startsWith('excl:'))  f.exclude_keywords  = (f.exclude_keywords || []).filter(k => k !== key.slice(5));
   else if (key.startsWith('req:'))   f.requires_courses  = (f.requires_courses || []).filter(c => c !== key.slice(4));
+  await applyFilterObj(f);
+}
 
-  setHint('Filtering…');
-  const data = await fetch('/api/filter', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filters: f }),
-  }).then(r => r.json());
-  filterHitIds = new Set(data.course_ids);
-  setFilterChips(f);
-  setHint(`${data.count} courses matched`);
-  draw();
+// Unified re-filter: routes to /api/refilter (search mode) or /api/filter (galaxy/selected).
+async function applyFilterObj(f) {
+  setHint(VIEW === 'SEARCH' ? 'Searching…' : 'Filtering…');
+  if (VIEW === 'SEARCH' && searchTopics.length > 0) {
+    const data = await fetch('/api/refilter', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topics: searchTopics, filters: f, n: 20 }),
+    }).then(r => r.json());
+    startSearch(data.courses, data.scores, searchQuery, {
+      action: 'search', topics: searchTopics, filters: f,
+      explanation: `${data.courses.length} courses matched`,
+    });
+  } else {
+    const data = await fetch('/api/filter', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filters: f }),
+    }).then(r => r.json());
+    filterHitIds = new Set(data.course_ids);
+    setFilterChips(f);
+    setHint(`${data.count} courses matched`);
+    draw();
+  }
 }
 
 

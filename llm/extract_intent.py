@@ -115,7 +115,7 @@ def extract_intent(query: str) -> LearningIntent:
     """
     client = _get_client()
     response = client.messages.create(
-        model="claude-opus-4-8",
+        model="claude-haiku-4-5",
         max_tokens=512,
         system=_SYSTEM,
         messages=[{"role": "user", "content": query}],

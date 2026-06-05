@@ -51,6 +51,60 @@ class FilterRequest(BaseModel):
     filters: dict
 
 
+class RefilterRequest(BaseModel):
+    topics: list[str]
+    filters: dict
+    n: int = 20
+
+
+@app.post("/api/refilter")
+def refilter(req: RefilterRequest):
+    """Re-run semantic search with updated filters, bypassing the LLM.
+
+    Used when the user modifies filter chips on a search result — re-embeds
+    the stored topics and applies the new filter set without another LLM call.
+    """
+    from retrieval.search import _load, _load_embeddings
+    from llm.schema import Filters
+    from llm.filters import apply_filters
+
+    model, _, courses_by_id = _load()
+    all_ids, E, _ = _load_embeddings()
+
+    try:
+        filters = Filters(**req.filters)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid filter object")
+
+    if req.topics:
+        topic_vecs = model.encode(req.topics, normalize_embeddings=True).astype(np.float32)
+        raw_scores = (E @ topic_vecs.T).max(axis=1).tolist()
+    else:
+        raw_scores = [0.0] * len(all_ids)
+
+    filtered_ids = {c["id"] for c in apply_filters(_all_courses(), filters)}
+    scored = [(rid, s) for rid, s in zip(all_ids, raw_scores) if rid in filtered_ids]
+    scored.sort(key=lambda x: -x[1])
+    top_n = scored[:req.n]
+
+    return {
+        "courses": [
+            {
+                "id":          cid,
+                "title":       courses_by_id[cid]["title"],
+                "description": courses_by_id[cid].get("description"),
+                "units":       courses_by_id[cid].get("units"),
+                "level":       courses_by_id[cid].get("level"),
+                "score":       round(float(s), 4),
+            }
+            for cid, s in top_n
+            if cid in courses_by_id
+        ],
+        "scores":     {rid: round(float(s), 4) for rid, s in zip(all_ids, raw_scores)},
+        "filter_ids": list(filtered_ids),
+    }
+
+
 @app.post("/api/filter")
 def filter_direct(req: FilterRequest):
     """Apply explicit filter constraints without calling the LLM.
