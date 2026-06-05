@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>KnowledgeAtlas</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -14,8 +15,8 @@
       --muted:   #64748b;
       --border:  #e2e8f0;
       --accent:  #2563eb;
-      --pre:     #059669;   /* prerequisite: green  */
-      --post:    #d97706;   /* successor:   amber   */
+      --pre:     #059669;
+      --post:    #d97706;
       --shadow:  0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.05);
       --shadow-lg: 0 8px 30px rgba(0,0,0,0.10), 0 2px 8px rgba(0,0,0,0.06);
     }
@@ -30,10 +31,11 @@
       position: fixed; top: 20px; left: 22px; z-index: 10;
       font-size: 14px; font-weight: 700; letter-spacing: -0.02em;
       color: var(--text); pointer-events: none; user-select: none;
+      display: flex; align-items: center; gap: 6px;
     }
     #logo em { color: var(--accent); font-style: normal; }
 
-    /* ── Hint pill (shows after search / select) ── */
+    /* ── Hint pill ── */
     #hint {
       position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
       font-size: 12px; color: var(--muted);
@@ -125,12 +127,22 @@
 </head>
 <body>
 
-<div id="logo">Knowledge<em>Atlas</em></div>
+<div id="logo">
+  <svg width="18" height="18" viewBox="0 0 32 32" aria-hidden="true">
+    <line x1="16" y1="9" x2="7"  y2="23" stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="16" y1="9" x2="25" y2="23" stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="7"  y1="23" x2="25" y2="23" stroke="#cbd5e1" stroke-width="1"   stroke-linecap="round"/>
+    <circle cx="16" cy="9"  r="4.5" fill="#2563eb"/>
+    <circle cx="7"  cy="23" r="3"   fill="#059669"/>
+    <circle cx="25" cy="23" r="3"   fill="#7c3aed"/>
+  </svg>
+  Knowledge<em>Atlas</em>
+</div>
 <div id="hint"></div>
 <canvas id="canvas"></canvas>
 
 <div id="tooltip">
-  <div class="tt-id"   id="tt-id"></div>
+  <div class="tt-id"    id="tt-id"></div>
   <div class="tt-title" id="tt-title"></div>
   <div class="tt-meta"  id="tt-meta"></div>
 </div>
@@ -138,7 +150,7 @@
 <div id="detail">
   <button id="detail-close">✕</button>
   <div class="d-header">
-    <div class="d-id"   id="d-id"></div>
+    <div class="d-id"    id="d-id"></div>
     <div class="d-title" id="d-title"></div>
     <div class="d-meta"  id="d-meta"></div>
   </div>
@@ -191,16 +203,20 @@ window.addEventListener('resize', () => { resize(); if (VIEW === 'GALAXY') start
 
 let VIEW     = 'GALAXY';   // GALAXY | SEARCH | SELECTED
 let nodes    = [];
-let edges    = [];          // { source: nodeObj, target: nodeObj }
+let edges    = [];
 let nodeById = {};
-let courseDetails = {};     // id → full course data (fetched on demand)
+let courseDetails = {};
 
-let selected       = null;
-let hovered        = null;
-let searchScores   = {};
-let prereqDepths   = new Map();  // id → depth (0=selected, 1=direct prereq, 2=prereq-of-prereq…)
-let selSuccIds     = new Set();
-let selRelEdges    = [];    // pre-filtered edges for SELECTED view
+let selected     = null;
+let hovered      = null;
+let searchScores = {};
+let prereqDepths = new Map();   // id → depth (0=selected, 1=direct prereq, …)
+let selSuccIds   = new Set();
+let selRelEdges  = [];
+
+let searchQuery     = '';
+let searchQueryNode = null;     // virtual X node pinned at center in SEARCH view
+let searchEdges     = [];       // virtual edges: queryNode → matched courses
 
 let T   = d3.zoomIdentity;
 let sim = null;
@@ -208,7 +224,7 @@ let qt  = null;
 
 
 // ═══════════════════════════════════════════════════════════════
-// COLOR SYSTEM  — add entries to COLOR_MODES to extend
+// COLOR SYSTEM
 // ═══════════════════════════════════════════════════════════════
 
 const deptScale = d3.scaleOrdinal(d3.schemeTableau10);
@@ -222,6 +238,28 @@ let colorMode = 'department';
 
 function baseColor(n) {
   return COLOR_MODES[colorMode]?.(n) ?? '#94a3b8';
+}
+
+// Desaturated, lightened version of the dept color for background nodes
+function ghostColor(n) {
+  const c = d3.hsl(baseColor(n));
+  c.s = c.s * 0.14;
+  c.l = Math.min(c.l + 0.28, 0.91);
+  return c + '';
+}
+
+function nodeColor(n) {
+  if (VIEW === 'SELECTED') {
+    const d = prereqDepths.get(n.id);
+    if (d === 0) return '#2563eb';
+    if (d !== undefined) return PREREQ_COLORS[Math.min(d - 1, PREREQ_COLORS.length - 1)];
+    if (selSuccIds.has(n.id)) return '#d97706';
+    return ghostColor(n);
+  }
+  if (VIEW === 'SEARCH') {
+    return searchScores[n.id] > 0 ? baseColor(n) : ghostColor(n);
+  }
+  return baseColor(n);
 }
 
 
@@ -253,8 +291,8 @@ function resetZoom() {
     .call(zoomBehavior.transform, d3.zoomIdentity);
 }
 
-// BFS to collect all transitive prerequisites up to maxDepth levels
-function buildPrereqDepths(rootId, maxDepth = 2) {
+// BFS collecting all transitive prerequisites (unlimited depth by default)
+function buildPrereqDepths(rootId, maxDepth = Infinity) {
   const depths = new Map();
   const queue  = [[rootId, 0]];
   while (queue.length) {
@@ -273,7 +311,7 @@ function buildPrereqDepths(rootId, maxDepth = 2) {
 
 
 // ═══════════════════════════════════════════════════════════════
-// VIEW: GALAXY — all courses clustered by department
+// VIEW: GALAXY
 // ═══════════════════════════════════════════════════════════════
 
 function deptCentroids() {
@@ -291,6 +329,7 @@ function startGalaxy() {
   VIEW = 'GALAXY';
   selected = null; searchScores = {};
   prereqDepths = new Map(); selSuccIds = new Set(); selRelEdges = [];
+  searchQuery = ''; searchQueryNode = null; searchEdges = [];
   nodes.forEach(n => { n.fx = null; n.fy = null; });
 
   const c = deptCentroids();
@@ -309,16 +348,25 @@ function startGalaxy() {
 
 
 // ═══════════════════════════════════════════════════════════════
-// VIEW: SEARCH — matched courses pulled to centre by score
+// VIEW: SEARCH — X marker at centre, matched courses radiate out
 // ═══════════════════════════════════════════════════════════════
 
-function startSearch(results) {
+function startSearch(results, query) {
   VIEW = 'SEARCH';
   selected = null;
   prereqDepths = new Map(); selSuccIds = new Set(); selRelEdges = [];
 
+  searchQuery = query;
   searchScores = {};
   results.forEach((c, i) => { searchScores[c.id] = 1 - i / results.length; });
+
+  // Virtual query node pinned at canvas centre
+  searchQueryNode = { id: '__query__', x: W/2, y: H/2, fx: W/2, fy: H/2 };
+
+  // Virtual edges from query node to each matched course
+  searchEdges = results
+    .map(c => ({ source: searchQueryNode, target: nodeById[c.id] }))
+    .filter(e => e.target);
 
   nodes.forEach(n => { n.fx = null; n.fy = null; });
   resetZoom();
@@ -327,11 +375,11 @@ function startSearch(results) {
   sim = d3.forceSimulation(nodes)
     .force('radial', d3.forceRadial(n => {
       const s = searchScores[n.id] ?? 0;
-      return s > 0 ? (1 - s) * 160 + 10 : Math.min(W, H) * 0.52;
-    }, W/2, H/2).strength(n => searchScores[n.id] > 0 ? 0.9 : 0.07))
+      return s > 0 ? (1 - s) * 200 + 50 : Math.min(W, H) * 0.48;
+    }, W/2, H/2).strength(n => searchScores[n.id] > 0 ? 0.85 : 0.06))
     .force('charge', d3.forceManyBody()
-      .strength(n => searchScores[n.id] > 0 ? -60 : -1))
-    .force('coll',   d3.forceCollide(n => searchScores[n.id] > 0 ? 20 : 3.5)
+      .strength(n => searchScores[n.id] > 0 ? -80 : -1))
+    .force('coll',   d3.forceCollide(n => searchScores[n.id] > 0 ? 42 : 3.5)
       .strength(0.8))
     .alphaDecay(0.016)
     .on('tick', tick);
@@ -341,19 +389,19 @@ function startSearch(results) {
 
 
 // ═══════════════════════════════════════════════════════════════
-// VIEW: SELECTED — focal course + prereq / successor context
+// VIEW: SELECTED — focal course + full prereq chain + successors
 // ═══════════════════════════════════════════════════════════════
 
 function startSelected(id) {
   VIEW = 'SELECTED';
+  searchQuery = ''; searchQueryNode = null; searchEdges = [];
   selected = nodeById[id];
   if (!selected) return;
 
-  // Transitive prereqs up to 2 levels deep
-  prereqDepths = buildPrereqDepths(id, 2);
+  // Full transitive prereq chain (no depth limit)
+  prereqDepths = buildPrereqDepths(id);
   selSuccIds   = new Set(edges.filter(e => e.source.id === id).map(e => e.target.id));
 
-  // Edges where both endpoints are in the relevant set
   const relIds = new Set([...prereqDepths.keys(), ...selSuccIds]);
   selRelEdges  = edges.filter(e => relIds.has(e.source.id) && relIds.has(e.target.id));
 
@@ -367,21 +415,28 @@ function startSelected(id) {
     .force('x', d3.forceX(n => {
       const d = prereqDepths.get(n.id);
       if (d === 0) return W / 2;
-      if (d !== undefined) return W / 2 - d * 210;  // deeper prereqs push further left
-      if (selSuccIds.has(n.id)) return W / 2 + 230;
+      // Prereqs spread left; cap so deep chains don't vanish off-screen
+      if (d !== undefined) return W / 2 - Math.min(d * 200, W * 0.44);
+      if (selSuccIds.has(n.id)) return W / 2 + 240;
       return n.x;
     }).strength(n =>
-      prereqDepths.has(n.id) || selSuccIds.has(n.id) ? (n === selected ? 1 : 0.5) : 0))
+      prereqDepths.has(n.id) || selSuccIds.has(n.id) ? (n === selected ? 1 : 0.45) : 0))
     .force('y', d3.forceY(H / 2).strength(n =>
       prereqDepths.has(n.id) || selSuccIds.has(n.id) ? 0.18 : 0))
-    .force('charge', d3.forceManyBody().strength(n =>
-      prereqDepths.has(n.id) || selSuccIds.has(n.id) ? -120 : -1))
-    .force('coll',   d3.forceCollide(n => {
+    .force('charge', d3.forceManyBody().strength(n => {
       const d = prereqDepths.get(n.id);
-      if (d === 0) return 22;
-      if (d === 1) return 16;
+      if (d === 0) return -200;
+      if (d === 1) return -100;
+      if (d !== undefined) return -55;
+      if (selSuccIds.has(n.id)) return -100;
+      return -1;
+    }))
+    .force('coll', d3.forceCollide(n => {
+      const d = prereqDepths.get(n.id);
+      if (d === 0) return 52;
+      if (d === 1) return 42;
       if (d !== undefined) return 13;
-      if (selSuccIds.has(n.id)) return 15;
+      if (selSuccIds.has(n.id)) return 40;
       return 4;
     }))
     .alphaDecay(0.02)
@@ -389,6 +444,25 @@ function startSelected(id) {
 
   const total = prereqDepths.size - 1;
   setHint(`${selected.id}  ·  ${total} prerequisite${total !== 1 ? 's' : ''}  ·  enables ${selSuccIds.size}`);
+
+  // Asynchronously fetch semantic similarity and add a gentle clustering force
+  const snapId = id;
+  fetch(`/api/similar/${id}`).then(r => r.json()).then(({ similar }) => {
+    if (VIEW !== 'SELECTED' || selected?.id !== snapId || !sim) return;
+    const simMap = new Map(similar.map(({ id: sid, score }) => [sid, score]));
+    const relSet = new Set([...prereqDepths.keys(), ...selSuccIds]);
+    const simLinks = [];
+    simMap.forEach((score, sid) => {
+      if (relSet.has(sid) && sid !== snapId && nodeById[sid])
+        simLinks.push({ source: nodeById[sid], target: selected, score });
+    });
+    if (simLinks.length) {
+      sim.force('similarity', d3.forceLink(simLinks)
+        .strength(e => e.score * 0.12)
+        .distance(e => (1 - e.score) * 200 + 50));
+      sim.alpha(0.25).restart();
+    }
+  }).catch(() => {});
 }
 
 
@@ -396,7 +470,7 @@ function startSelected(id) {
 // DRAWING
 // ═══════════════════════════════════════════════════════════════
 
-const PREREQ_COLORS = ['#059669', '#0891b2', '#7c3aed'];  // depth 1, 2, 3+
+const PREREQ_COLORS = ['#059669', '#0891b2', '#7c3aed'];
 
 function nodeR(n) {
   if (VIEW === 'SELECTED') {
@@ -414,52 +488,54 @@ function nodeR(n) {
   return 3;
 }
 
-function nodeColor(n) {
-  if (VIEW === 'SELECTED') {
-    const d = prereqDepths.get(n.id);
-    if (d === 0) return '#2563eb';
-    if (d !== undefined) return PREREQ_COLORS[Math.min(d - 1, PREREQ_COLORS.length - 1)];
-    if (selSuccIds.has(n.id)) return '#d97706';
-    return '#dde3ea';
-  }
-  if (VIEW === 'SEARCH') {
-    return searchScores[n.id] > 0 ? baseColor(n) : '#dde3ea';
-  }
-  return baseColor(n);
-}
-
 function drawEdges() {
-  if (!selected || !selRelEdges.length) return;
-  ctx.save();
-  ctx.lineCap = 'round';
+  // SELECTED: prereq/succ relationship edges
+  if (selected && selRelEdges.length) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    selRelEdges.forEach(e => {
+      const s = e.source, t = e.target;
+      if (!isFinite(s.x) || !isFinite(t.x)) return;
+      let color = '#cbd5e1', lw = 1, alpha = 0.45;
+      if (hovered) {
+        if (t === hovered) { color = '#059669'; lw = 2; alpha = 0.9; }
+        else if (s === hovered) { color = '#d97706'; lw = 2; alpha = 0.9; }
+      }
+      if (s === selected || t === selected) { lw = Math.max(lw, 1.5); alpha = Math.max(alpha, 0.55); }
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y);
+      ctx.strokeStyle = color;
+      ctx.lineWidth   = lw / T.k;
+      ctx.globalAlpha = alpha;
+      ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
 
-  selRelEdges.forEach(e => {
-    const s = e.source, t = e.target;
-    if (!isFinite(s.x) || !isFinite(t.x)) return;
-
-    let color = '#cbd5e1', lw = 1, alpha = 0.45;
-
-    if (hovered) {
-      if (t === hovered) { color = '#059669'; lw = 2; alpha = 0.9; } // incoming → green (prereq)
-      else if (s === hovered) { color = '#d97706'; lw = 2; alpha = 0.9; } // outgoing → amber (enables)
-    }
-    if (s === selected || t === selected) { lw = Math.max(lw, 1.5); alpha = Math.max(alpha, 0.55); }
-
-    ctx.beginPath();
-    ctx.moveTo(s.x, s.y);
-    ctx.lineTo(t.x, t.y);
-    ctx.strokeStyle = color;
-    ctx.lineWidth   = lw / T.k;
-    ctx.globalAlpha = alpha;
-    ctx.stroke();
-  });
-
-  ctx.globalAlpha = 1;
-  ctx.restore();
+  // SEARCH: query node → matched course edges
+  if (VIEW === 'SEARCH' && searchQueryNode && searchEdges.length) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#2563eb';
+    ctx.lineWidth = 1 / T.k;
+    searchEdges.forEach(e => {
+      const t = e.target;
+      if (!isFinite(t.x)) return;
+      const score = searchScores[t.id] ?? 0;
+      ctx.globalAlpha = 0.07 + score * 0.25;
+      ctx.beginPath();
+      ctx.moveTo(searchQueryNode.x, searchQueryNode.y);
+      ctx.lineTo(t.x, t.y);
+      ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
 }
 
 function drawNodes() {
-  // Batch by (color, radius) to minimise fill calls
+  // Batch circles by (color, radius) to minimise ctx.fill() calls
   const groups = new Map();
   nodes.forEach(n => {
     if (!isFinite(n.x) || !isFinite(n.y)) return;
@@ -468,11 +544,10 @@ function drawNodes() {
     if (!groups.has(key)) groups.set(key, { c, r, list: [] });
     groups.get(key).list.push(n);
   });
-
   groups.forEach(({ c, r, list }) => {
     ctx.fillStyle = c;
     ctx.beginPath();
-    list.forEach(n => { ctx.moveTo(n.x + r, n.y); ctx.arc(n.x, n.y, r, 0, 2*Math.PI); });
+    list.forEach(n => { ctx.moveTo(n.x + r, n.y); ctx.arc(n.x, n.y, r, 0, 2 * Math.PI); });
     ctx.fill();
   });
 
@@ -481,20 +556,65 @@ function drawNodes() {
     if (!n || !isFinite(n.x)) return;
     const r = nodeR(n) + (i === 1 ? 4 : 2.5);
     ctx.beginPath();
-    ctx.arc(n.x, n.y, r, 0, 2*Math.PI);
+    ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
     ctx.strokeStyle = '#2563eb';
     ctx.lineWidth   = (i === 1 ? 2 : 1.5) / T.k;
     ctx.stroke();
   });
+
+  // X marker for the search query node
+  if (VIEW === 'SEARCH' && searchQueryNode) {
+    const { x, y } = searchQueryNode;
+    const sz = 10;
+    ctx.save();
+    // Soft halo circle
+    ctx.beginPath();
+    ctx.arc(x, y, sz * 1.8, 0, 2 * Math.PI);
+    ctx.strokeStyle = 'rgba(37,99,235,0.12)';
+    ctx.lineWidth = 1.5 / T.k;
+    ctx.stroke();
+    // X cross
+    ctx.strokeStyle = '#2563eb';
+    ctx.lineWidth   = 2.5 / T.k;
+    ctx.lineCap     = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x - sz, y - sz); ctx.lineTo(x + sz, y + sz);
+    ctx.moveTo(x + sz, y - sz); ctx.lineTo(x - sz, y + sz);
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 function halo(text, x, y) {
   ctx.save();
-  ctx.lineJoin  = 'round';
-  ctx.lineWidth = 3 / T.k;
-  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineJoin    = 'round';
+  ctx.lineWidth   = 3 / T.k;
+  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
   ctx.strokeText(text, x, y);
   ctx.restore();
+}
+
+// Word-wrap text to maxPx wide, up to maxLines lines.
+// Font must be set before calling (used for measureText).
+function wrapText(text, maxPx, maxLines = 2) {
+  const words = text.split(' ');
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const test = cur ? cur + ' ' + w : w;
+    if (ctx.measureText(test).width > maxPx && cur) {
+      if (lines.length + 1 >= maxLines) {
+        lines.push(cur + ' …');
+        return lines;
+      }
+      lines.push(cur);
+      cur = w;
+    } else {
+      cur = test;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines;
 }
 
 function drawLabels() {
@@ -502,40 +622,69 @@ function drawLabels() {
 
   if (VIEW === 'SELECTED') {
     nodes.forEach(n => {
-      const d = prereqDepths.get(n.id);
-      if (d !== undefined || selSuccIds.has(n.id)) toLabel.push({ n, big: d === 0 });
+      const d     = prereqDepths.get(n.id);
+      const isSucc = selSuccIds.has(n.id);
+      // Label depth 0 (selected), 1 (direct prereq), 2 (prereq-of-prereq), successors
+      // Depth 3+ are shown as colored nodes but unlabeled (tooltip on hover)
+      if (d === 0 || d === 1 || d === 2 || isSucc) {
+        toLabel.push({ n, big: d === 0, labelDepth: d ?? -1 });
+      }
     });
   } else if (VIEW === 'SEARCH') {
-    nodes.forEach(n => { if (searchScores[n.id] > 0) toLabel.push({ n, big: false }); });
+    nodes.forEach(n => {
+      if (searchScores[n.id] > 0) toLabel.push({ n, big: false, labelDepth: 0 });
+    });
   } else if (hovered && T.k > 2) {
-    toLabel.push({ n: hovered, big: false });
+    toLabel.push({ n: hovered, big: false, labelDepth: 0 });
   }
 
-  if (!toLabel.length) return;
+  if (!toLabel.length && !(VIEW === 'SEARCH' && searchQueryNode)) return;
 
   ctx.textAlign = 'center';
+  const LINE_H = 13;
 
-  toLabel.forEach(({ n, big }) => {
+  toLabel.forEach(({ n, big, labelDepth }) => {
     const r        = nodeR(n);
     const fontSize = big ? 12 : 10;
     const idSize   = big ? 10 : 8.5;
-    const maxCh    = Math.floor(r * 8 / fontSize);  // chars that fit above/below the circle
-    const title    = n.title.length > maxCh ? n.title.slice(0, maxCh - 1) + '…' : n.title;
     const idY      = n.y - r - 3;
-    const titleY   = n.y + r + fontSize + 1;
 
-    // Course ID above circle
+    // Course ID above circle (always shown for labeled nodes)
     ctx.font = `700 ${idSize}px -apple-system, sans-serif`;
     halo(n.id, n.x, idY);
     ctx.fillStyle = '#2563eb';
     ctx.fillText(n.id, n.x, idY);
 
-    // Title below circle
-    ctx.font = `500 ${fontSize}px -apple-system, sans-serif`;
-    halo(title, n.x, titleY);
-    ctx.fillStyle = '#0f172a';
-    ctx.fillText(title, n.x, titleY);
+    // Title below circle:
+    //   depth 0 (selected) → 2 lines, 160px wide
+    //   depth 1, successor  → 1 line,  120px wide
+    //   depth 2             → ID only (no title)
+    //   SEARCH matches      → 1 line,  130px wide
+    const showTitle = big || labelDepth === 1 || labelDepth === -1 || VIEW === 'SEARCH';
+    if (showTitle) {
+      const maxLines = big ? 2 : 1;
+      const wrapPx   = big ? 160 : (VIEW === 'SEARCH' ? 130 : 120);
+      ctx.font = `500 ${fontSize}px -apple-system, sans-serif`;
+      const lines = wrapText(n.title, wrapPx, maxLines);
+      lines.forEach((line, i) => {
+        const y = n.y + r + fontSize + 2 + i * LINE_H;
+        halo(line, n.x, y);
+        ctx.fillStyle = '#0f172a';
+        ctx.fillText(line, n.x, y);
+      });
+    }
   });
+
+  // Query label below the X marker
+  if (VIEW === 'SEARCH' && searchQueryNode && searchQuery) {
+    ctx.font      = `600 11px -apple-system, sans-serif`;
+    ctx.textAlign = 'center';
+    const { x, y } = searchQueryNode;
+    const ly = y + 24;
+    halo(searchQuery, x, ly);
+    ctx.fillStyle = '#2563eb';
+    ctx.fillText(searchQuery, x, ly);
+  }
 }
 
 function draw() {
@@ -595,8 +744,8 @@ function showTip(ev, n) {
   let rel = '';
   if (VIEW === 'SELECTED' && selected) {
     const d = prereqDepths.get(n.id);
-    if (d === 0)             rel = ' · selected';
-    else if (d === 1)        rel = ' · direct prerequisite';
+    if (d === 0)              rel = ' · selected';
+    else if (d === 1)         rel = ' · direct prerequisite';
     else if (d !== undefined) rel = ` · prereq (depth ${d})`;
     else if (selSuccIds.has(n.id)) rel = ' · enabled by this';
   } else if (VIEW === 'SEARCH' && searchScores[n.id] > 0) {
@@ -618,7 +767,6 @@ function hideTip() { tipEl.style.opacity = '0'; }
 // ═══════════════════════════════════════════════════════════════
 
 async function openDetail(id) {
-  // Fill what we have immediately
   const n = nodeById[id];
   if (n) {
     document.getElementById('d-id').textContent    = n.id;
@@ -630,7 +778,6 @@ async function openDetail(id) {
   }
   document.getElementById('detail').classList.add('open');
 
-  // Fetch full details
   let c = courseDetails[id];
   if (!c) {
     c = await fetch(`/api/course/${id}`).then(r => r.json());
@@ -690,7 +837,7 @@ async function doSearch(q) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query: q, n: 10 }),
   }).then(r => r.json());
-  startSearch(courses);
+  startSearch(courses, q);
 }
 
 searchInput.addEventListener('keydown', e => {

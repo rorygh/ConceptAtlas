@@ -100,6 +100,29 @@ def course(course_id: str):
     raise HTTPException(status_code=404, detail="Course not found")
 
 
+@app.get("/api/similar/{course_id:path}")
+def similar_courses(course_id: str):
+    from retrieval.search import _load
+    _, collection, courses_by_id = _load()
+    if course_id not in courses_by_id:
+        raise HTTPException(status_code=404, detail="Not found")
+    stored = collection.get(ids=[course_id], include=["embeddings"])
+    if stored["embeddings"] is None or len(stored["embeddings"]) == 0:
+        raise HTTPException(status_code=404, detail="No embedding found")
+    results = collection.query(query_embeddings=[stored["embeddings"][0]], n_results=21)
+    return {
+        "similar": [
+            {"id": rid, "score": round(1 - i / 20, 3)}
+            for i, rid in enumerate(results["ids"][0])
+            if rid != course_id
+        ][:20]
+    }
+
+
+@app.get("/favicon.svg")
+def favicon():
+    return FileResponse(STATIC / "favicon.svg", media_type="image/svg+xml")
+
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
