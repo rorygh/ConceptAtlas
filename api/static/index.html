@@ -198,7 +198,7 @@ let courseDetails = {};     // id → full course data (fetched on demand)
 let selected       = null;
 let hovered        = null;
 let searchScores   = {};
-let selPrereqIds   = new Set();
+let prereqDepths   = new Map();  // id → depth (0=selected, 1=direct prereq, 2=prereq-of-prereq…)
 let selSuccIds     = new Set();
 let selRelEdges    = [];    // pre-filtered edges for SELECTED view
 
@@ -248,6 +248,29 @@ function updateQt() {
 
 function tick() { updateQt(); draw(); }
 
+function resetZoom() {
+  d3.select(canvas).transition().duration(650)
+    .call(zoomBehavior.transform, d3.zoomIdentity);
+}
+
+// BFS to collect all transitive prerequisites up to maxDepth levels
+function buildPrereqDepths(rootId, maxDepth = 2) {
+  const depths = new Map();
+  const queue  = [[rootId, 0]];
+  while (queue.length) {
+    const [id, d] = queue.shift();
+    if (depths.has(id)) continue;
+    depths.set(id, d);
+    if (d < maxDepth) {
+      edges.forEach(e => {
+        if (e.target.id === id && !depths.has(e.source.id))
+          queue.push([e.source.id, d + 1]);
+      });
+    }
+  }
+  return depths;
+}
+
 
 // ═══════════════════════════════════════════════════════════════
 // VIEW: GALAXY — all courses clustered by department
@@ -267,7 +290,7 @@ function deptCentroids() {
 function startGalaxy() {
   VIEW = 'GALAXY';
   selected = null; searchScores = {};
-  selPrereqIds = new Set(); selSuccIds = new Set(); selRelEdges = [];
+  prereqDepths = new Map(); selSuccIds = new Set(); selRelEdges = [];
   nodes.forEach(n => { n.fx = null; n.fy = null; });
 
   const c = deptCentroids();
@@ -292,12 +315,13 @@ function startGalaxy() {
 function startSearch(results) {
   VIEW = 'SEARCH';
   selected = null;
-  selPrereqIds = new Set(); selSuccIds = new Set(); selRelEdges = [];
+  prereqDepths = new Map(); selSuccIds = new Set(); selRelEdges = [];
 
   searchScores = {};
   results.forEach((c, i) => { searchScores[c.id] = 1 - i / results.length; });
 
   nodes.forEach(n => { n.fx = null; n.fy = null; });
+  resetZoom();
 
   stopSim();
   sim = d3.forceSimulation(nodes)
@@ -306,8 +330,8 @@ function startSearch(results) {
       return s > 0 ? (1 - s) * 160 + 10 : Math.min(W, H) * 0.52;
     }, W/2, H/2).strength(n => searchScores[n.id] > 0 ? 0.9 : 0.07))
     .force('charge', d3.forceManyBody()
-      .strength(n => searchScores[n.id] > 0 ? -70 : -1))
-    .force('coll',   d3.forceCollide(n => searchScores[n.id] > 0 ? 50 : 3.5)
+      .strength(n => searchScores[n.id] > 0 ? -60 : -1))
+    .force('coll',   d3.forceCollide(n => searchScores[n.id] > 0 ? 20 : 3.5)
       .strength(0.8))
     .alphaDecay(0.016)
     .on('tick', tick);
@@ -325,46 +349,46 @@ function startSelected(id) {
   selected = nodeById[id];
   if (!selected) return;
 
-  selPrereqIds = new Set();
-  selSuccIds   = new Set();
-  edges.forEach(e => {
-    if (e.target === selected) selPrereqIds.add(e.source.id);
-    if (e.source === selected) selSuccIds.add(e.target.id);
-  });
+  // Transitive prereqs up to 2 levels deep
+  prereqDepths = buildPrereqDepths(id, 2);
+  selSuccIds   = new Set(edges.filter(e => e.source.id === id).map(e => e.target.id));
 
-  // Pre-filter edges to only those worth drawing
-  selRelEdges = edges.filter(e =>
-    e.source === selected || e.target === selected ||
-    (selPrereqIds.has(e.source.id) && selPrereqIds.has(e.target.id)) ||
-    (selSuccIds.has(e.source.id)   && selSuccIds.has(e.target.id))
-  );
+  // Edges where both endpoints are in the relevant set
+  const relIds = new Set([...prereqDepths.keys(), ...selSuccIds]);
+  selRelEdges  = edges.filter(e => relIds.has(e.source.id) && relIds.has(e.target.id));
 
   nodes.forEach(n => { n.fx = null; n.fy = null; });
   selected.fx = W / 2;
   selected.fy = H / 2;
+  resetZoom();
 
   stopSim();
   sim = d3.forceSimulation(nodes)
     .force('x', d3.forceX(n => {
-      if (n === selected)             return W / 2;
-      if (selPrereqIds.has(n.id))     return W / 2 - 230;
-      if (selSuccIds.has(n.id))       return W / 2 + 230;
+      const d = prereqDepths.get(n.id);
+      if (d === 0) return W / 2;
+      if (d !== undefined) return W / 2 - d * 210;  // deeper prereqs push further left
+      if (selSuccIds.has(n.id)) return W / 2 + 230;
       return n.x;
     }).strength(n =>
-      n === selected ? 1 :
-      selPrereqIds.has(n.id) || selSuccIds.has(n.id) ? 0.5 : 0))
+      prereqDepths.has(n.id) || selSuccIds.has(n.id) ? (n === selected ? 1 : 0.5) : 0))
     .force('y', d3.forceY(H / 2).strength(n =>
-      selPrereqIds.has(n.id) || selSuccIds.has(n.id) ? 0.18 : 0))
+      prereqDepths.has(n.id) || selSuccIds.has(n.id) ? 0.18 : 0))
     .force('charge', d3.forceManyBody().strength(n =>
-      n === selected || selPrereqIds.has(n.id) || selSuccIds.has(n.id) ? -130 : -1))
-    .force('coll',   d3.forceCollide(n =>
-      n === selected ? 68 :
-      selPrereqIds.has(n.id) || selSuccIds.has(n.id) ? 52 : 4))
+      prereqDepths.has(n.id) || selSuccIds.has(n.id) ? -120 : -1))
+    .force('coll',   d3.forceCollide(n => {
+      const d = prereqDepths.get(n.id);
+      if (d === 0) return 22;
+      if (d === 1) return 16;
+      if (d !== undefined) return 13;
+      if (selSuccIds.has(n.id)) return 15;
+      return 4;
+    }))
     .alphaDecay(0.02)
     .on('tick', tick);
 
-  const p = selPrereqIds.size, s = selSuccIds.size;
-  setHint(`${selected.id}  ·  ${p} prerequisite${p !== 1 ? 's' : ''}  ·  enables ${s} course${s !== 1 ? 's' : ''}`);
+  const total = prereqDepths.size - 1;
+  setHint(`${selected.id}  ·  ${total} prerequisite${total !== 1 ? 's' : ''}  ·  enables ${selSuccIds.size}`);
 }
 
 
@@ -372,24 +396,30 @@ function startSelected(id) {
 // DRAWING
 // ═══════════════════════════════════════════════════════════════
 
+const PREREQ_COLORS = ['#059669', '#0891b2', '#7c3aed'];  // depth 1, 2, 3+
+
 function nodeR(n) {
   if (VIEW === 'SELECTED') {
-    if (n === selected)                          return 26;
-    if (selPrereqIds.has(n.id) || selSuccIds.has(n.id)) return 20;
+    const d = prereqDepths.get(n.id);
+    if (d === 0) return 14;
+    if (d === 1) return 10;
+    if (d !== undefined) return 7;
+    if (selSuccIds.has(n.id)) return 9;
     return 2.5;
   }
   if (VIEW === 'SEARCH') {
     const s = searchScores[n.id] ?? 0;
-    return s > 0 ? 18 + s * 8 : 2.5;   // 18–26px — tall enough for two text lines
+    return s > 0 ? 6 + s * 8 : 2.5;
   }
   return 3;
 }
 
 function nodeColor(n) {
   if (VIEW === 'SELECTED') {
-    if (n === selected)            return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
-    if (selPrereqIds.has(n.id))    return '#059669';
-    if (selSuccIds.has(n.id))      return '#d97706';
+    const d = prereqDepths.get(n.id);
+    if (d === 0) return '#2563eb';
+    if (d !== undefined) return PREREQ_COLORS[Math.min(d - 1, PREREQ_COLORS.length - 1)];
+    if (selSuccIds.has(n.id)) return '#d97706';
     return '#dde3ea';
   }
   if (VIEW === 'SEARCH') {
@@ -440,46 +470,40 @@ function drawNodes() {
   });
 
   groups.forEach(({ c, r, list }) => {
-    // Small background nodes stay circular; labeled nodes become ellipses
-    const rx = r <= 3 ? r : r * 2.5;
     ctx.fillStyle = c;
     ctx.beginPath();
-    list.forEach(n => {
-      if (rx === r) {
-        ctx.moveTo(n.x + r, n.y);
-        ctx.arc(n.x, n.y, r, 0, 2*Math.PI);
-      } else {
-        ctx.ellipse(n.x, n.y, rx, r, 0, 0, 2*Math.PI);
-      }
-    });
+    list.forEach(n => { ctx.moveTo(n.x + r, n.y); ctx.arc(n.x, n.y, r, 0, 2*Math.PI); });
     ctx.fill();
   });
 
   // Ring for hovered + selected
   [hovered, selected].forEach((n, i) => {
     if (!n || !isFinite(n.x)) return;
-    const r   = nodeR(n);
-    const rx  = r <= 3 ? r : r * 2.5;
-    const pad = i === 1 ? 4 : 2.5;
+    const r = nodeR(n) + (i === 1 ? 4 : 2.5);
     ctx.beginPath();
-    if (rx === r) {
-      ctx.arc(n.x, n.y, r + pad, 0, 2*Math.PI);
-    } else {
-      ctx.ellipse(n.x, n.y, rx + pad, r + pad * 0.5, 0, 0, 2*Math.PI);
-    }
+    ctx.arc(n.x, n.y, r, 0, 2*Math.PI);
     ctx.strokeStyle = '#2563eb';
     ctx.lineWidth   = (i === 1 ? 2 : 1.5) / T.k;
     ctx.stroke();
   });
 }
 
+function halo(text, x, y) {
+  ctx.save();
+  ctx.lineJoin  = 'round';
+  ctx.lineWidth = 3 / T.k;
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.strokeText(text, x, y);
+  ctx.restore();
+}
+
 function drawLabels() {
   const toLabel = [];
 
   if (VIEW === 'SELECTED') {
-    if (selected) toLabel.push({ n: selected, big: true });
     nodes.forEach(n => {
-      if (selPrereqIds.has(n.id) || selSuccIds.has(n.id)) toLabel.push({ n, big: false });
+      const d = prereqDepths.get(n.id);
+      if (d !== undefined || selSuccIds.has(n.id)) toLabel.push({ n, big: d === 0 });
     });
   } else if (VIEW === 'SEARCH') {
     nodes.forEach(n => { if (searchScores[n.id] > 0) toLabel.push({ n, big: false }); });
@@ -489,26 +513,28 @@ function drawLabels() {
 
   if (!toLabel.length) return;
 
+  ctx.textAlign = 'center';
+
   toLabel.forEach(({ n, big }) => {
     const r        = nodeR(n);
-    const rx       = r * 2.5;           // horizontal ellipse radius
     const fontSize = big ? 12 : 10;
     const idSize   = big ? 10 : 8.5;
-    const lineH    = fontSize + 3;      // gap between the two text lines
-    const maxCh    = Math.floor(rx * 1.7 / (fontSize * 0.58));
+    const maxCh    = Math.floor(r * 8 / fontSize);  // chars that fit above/below the circle
+    const title    = n.title.length > maxCh ? n.title.slice(0, maxCh - 1) + '…' : n.title;
+    const idY      = n.y - r - 3;
+    const titleY   = n.y + r + fontSize + 1;
 
-    ctx.textAlign = 'center';
+    // Course ID above circle
+    ctx.font = `700 ${idSize}px -apple-system, sans-serif`;
+    halo(n.id, n.x, idY);
+    ctx.fillStyle = '#2563eb';
+    ctx.fillText(n.id, n.x, idY);
 
-    // Course ID — upper half of ellipse
-    ctx.font      = `700 ${idSize}px -apple-system, sans-serif`;
-    ctx.fillStyle = big ? 'rgba(255,255,255,0.9)' : '#2563eb';
-    ctx.fillText(n.id, n.x, n.y - lineH / 2 + idSize * 0.35);
-
-    // Title — lower half of ellipse, truncated with ellipsis
-    const title = n.title.length > maxCh ? n.title.slice(0, maxCh - 1) + '…' : n.title;
-    ctx.font      = `500 ${fontSize}px -apple-system, sans-serif`;
-    ctx.fillStyle = big ? 'rgba(255,255,255,0.82)' : '#0f172a';
-    ctx.fillText(title, n.x, n.y + lineH / 2 + fontSize * 0.35);
+    // Title below circle
+    ctx.font = `500 ${fontSize}px -apple-system, sans-serif`;
+    halo(title, n.x, titleY);
+    ctx.fillStyle = '#0f172a';
+    ctx.fillText(title, n.x, titleY);
   });
 }
 
@@ -554,18 +580,32 @@ canvas.addEventListener('mouseleave', () => { hovered = null; hideTip(); draw();
 
 const tipEl = document.getElementById('tooltip');
 
+const DEPT_NAMES = {
+  '1':'Civil Eng.','2':'Mech. Eng.','3':'Materials','4':'Architecture',
+  '5':'Chemistry','6':'EECS','7':'Biology','8':'Physics',
+  '9':'Brain & Cog. Sci.','10':'Chem. Eng.','11':'Urban Studies',
+  '12':'Earth & Planetary Sci.','14':'Economics','15':'Sloan',
+  '16':'AeroAstro','17':'Political Sci.','18':'Mathematics',
+  '20':'Biological Eng.','21A':'Anthropology','22':'Nuclear Sci.',
+  '24':'Philosophy','HST':'Health Sci. & Tech.','STS':'Science & Society',
+  'CMS':'Comparative Media','MAS':'Media Arts & Sci.',
+};
+
 function showTip(ev, n) {
   let rel = '';
   if (VIEW === 'SELECTED' && selected) {
-    if (n === selected)                rel = ' · selected';
-    else if (selPrereqIds.has(n.id))   rel = ' · prerequisite';
-    else if (selSuccIds.has(n.id))     rel = ' · enabled by this';
+    const d = prereqDepths.get(n.id);
+    if (d === 0)             rel = ' · selected';
+    else if (d === 1)        rel = ' · direct prerequisite';
+    else if (d !== undefined) rel = ` · prereq (depth ${d})`;
+    else if (selSuccIds.has(n.id)) rel = ' · enabled by this';
   } else if (VIEW === 'SEARCH' && searchScores[n.id] > 0) {
     rel = ` · ${Math.round(searchScores[n.id] * 100)}% match`;
   }
+  const dept = DEPT_NAMES[n.dept] ? `${n.dept} — ${DEPT_NAMES[n.dept]}` : `Dept. ${n.dept}`;
   document.getElementById('tt-id').textContent    = n.id;
   document.getElementById('tt-title').textContent = n.title;
-  document.getElementById('tt-meta').textContent  = `${n.units} units${rel}`;
+  document.getElementById('tt-meta').textContent  = `${n.units} units · ${dept}${rel}`;
   tipEl.style.opacity = '1';
   tipEl.style.left = Math.min(ev.clientX + 14, W - 230) + 'px';
   tipEl.style.top  = Math.min(ev.clientY - 10, H - 90)  + 'px';
