@@ -464,56 +464,46 @@ function startSelected(id) {
       if (selSuccIds.has(n.id)) return 40;
       return 4;
     }))
-    // Gently pull background nodes toward screen centre so they stay visible
-    .force('bg-x', d3.forceX(W / 2).strength(n =>
-      prereqDepths.has(n.id) || selSuccIds.has(n.id) ? 0 : 0.006))
-    .force('bg-y', d3.forceY(H / 2).strength(n =>
-      prereqDepths.has(n.id) || selSuccIds.has(n.id) ? 0 : 0.006))
+    // Radial force for background nodes — target radius set by _simScore once loaded.
+    // Before scores arrive all background nodes sit at a neutral middle distance.
+    .force('sim-radial', d3.forceRadial(n => {
+      if (prereqDepths.has(n.id) || selSuccIds.has(n.id)) return 0;
+      const s = n._simScore ?? 0;
+      return 100 + (1 - s) * 500;   // score 1 → 100px out, score 0 → 600px out
+    }, W / 2, H / 2).strength(n => {
+      if (prereqDepths.has(n.id) || selSuccIds.has(n.id)) return 0;
+      return 0.04 + (n._simScore ?? 0) * 0.08;  // similar nodes pulled more firmly
+    }))
     .alphaDecay(0.02)
     .on('tick', tick);
 
   const total = prereqDepths.size - 1;
   setHint(`${selected.id}  ·  ${total} prerequisite${total !== 1 ? 's' : ''}  ·  enables ${selSuccIds.size}`);
 
-  // Asynchronously fetch semantic similarity.
-  // Similar prereq/succ nodes get a tighter spring; similar background nodes
-  // get a weaker spring so they drift toward the selected course organically.
+  // Fetch cosine similarity against ALL courses (one matrix multiply server-side).
+  // Scores are written onto each node so the radial force re-evaluates automatically.
   const snapId = id;
   fetch(`/api/similar/${id}`).then(r => r.json()).then(({ similar }) => {
     if (VIEW !== 'SELECTED' || selected?.id !== snapId || !sim) return;
 
-    const simMap = new Map(similar.map(({ id: sid, score }) => [sid, score]));
-    const relSet = new Set([...prereqDepths.keys(), ...selSuccIds]);
+    // Tag every node — similar dict covers all 7,083 courses
+    nodes.forEach(n => { n._simScore = similar[n.id] ?? 0; });
 
-    // Tag every node with its cosine similarity to the selected course (0 if not in top-20)
-    simMap.forEach((score, sid) => {
-      if (nodeById[sid]) nodeById[sid]._simScore = score;
+    // Springs for prereq/succ nodes (tighter, existing behaviour)
+    const relSet  = new Set([...prereqDepths.keys(), ...selSuccIds]);
+    const relLinks = [];
+    Object.entries(similar).forEach(([sid, score]) => {
+      if (relSet.has(sid) && sid !== snapId && nodeById[sid])
+        relLinks.push({ source: nodeById[sid], target: selected, score });
     });
-
-    const relLinks = [];   // springs for prereq/succ nodes
-    const bgLinks  = [];   // springs for background nodes
-
-    simMap.forEach((score, sid) => {
-      if (!nodeById[sid] || sid === snapId) return;
-      const link = { source: nodeById[sid], target: selected, score };
-      if (relSet.has(sid)) relLinks.push(link);
-      else bgLinks.push(link);
-    });
-
     if (relLinks.length) {
       sim.force('similarity', d3.forceLink(relLinks)
         .strength(e => e.score * 0.12)
         .distance(e => (1 - e.score) * 200 + 50));
     }
 
-    if (bgLinks.length) {
-      // Weaker pull for background nodes — they drift closer but don't crowd the prereqs
-      sim.force('bg-similarity', d3.forceLink(bgLinks)
-        .strength(e => e.score * 0.04)
-        .distance(e => (1 - e.score) * 250 + 120));
-    }
-
-    sim.alpha(0.3).restart();
+    // Kick the sim — radial force now has real scores and will re-sort everything
+    sim.alpha(0.4).restart();
   }).catch(() => {});
 }
 

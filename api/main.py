@@ -31,8 +31,9 @@ def _flatten_prereqs(node) -> list:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from retrieval.search import _load
+    from retrieval.search import _load, _load_embeddings
     _load()
+    _load_embeddings()   # pre-cache full embedding matrix (~10 MB) so first request is instant
     yield
 
 
@@ -102,25 +103,25 @@ def course(course_id: str):
 
 @app.get("/api/similar/{course_id:path}")
 def similar_courses(course_id: str):
-    from retrieval.search import _load
-    _, collection, courses_by_id = _load()
+    from retrieval.search import _load, _load_embeddings
+    _, _, courses_by_id = _load()
     if course_id not in courses_by_id:
         raise HTTPException(status_code=404, detail="Not found")
-    stored = collection.get(ids=[course_id], include=["embeddings"])
-    if stored["embeddings"] is None or len(stored["embeddings"]) == 0:
+
+    all_ids, E, id_to_idx = _load_embeddings()
+    idx = id_to_idx.get(course_id)
+    if idx is None:
         raise HTTPException(status_code=404, detail="No embedding found")
-    results = collection.query(
-        query_embeddings=[stored["embeddings"][0]],
-        n_results=21,
-        include=["distances"],
-    )
-    # Default ChromaDB metric is L2; for unit vectors: cos_sim = 1 - l2_dist / 2
+
+    # Single matrix multiply → cosine similarity against all 7,083 courses at once
+    scores = (E @ E[idx]).tolist()
+
     return {
-        "similar": [
-            {"id": rid, "score": round(1 - dist / 2, 3)}
-            for rid, dist in zip(results["ids"][0], results["distances"][0])
+        "similar": {
+            rid: round(float(s), 2)
+            for rid, s in zip(all_ids, scores)
             if rid != course_id
-        ][:20]
+        }
     }
 
 
