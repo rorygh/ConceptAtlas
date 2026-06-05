@@ -131,12 +131,28 @@
     }
     #intent-tags:empty { padding: 0; }
     .intent-tag {
-      font-size: 11px; font-weight: 500; letter-spacing: 0.02em;
-      color: var(--accent); background: rgba(37,99,235,0.08);
-      border: 1px solid rgba(37,99,235,0.18);
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      color: #1d4ed8; background: #eff6ff;
+      border: 1px solid #bfdbfe;
       border-radius: 20px; padding: 2px 9px;
       pointer-events: none; user-select: none;
     }
+    .filter-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+      color: #1d4ed8; background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 20px; padding: 2px 6px 2px 9px;
+      user-select: none;
+    }
+    .fc-x {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #bfdbfe; color: #1e40af;
+      font-size: 11px; line-height: 1; cursor: pointer;
+      transition: background 0.12s; flex-shrink: 0;
+    }
+    .fc-x:hover { background: #93c5fd; }
   </style>
 </head>
 <body>
@@ -234,6 +250,8 @@ let searchQueryNode = null;     // virtual X node pinned at center in SEARCH vie
 let searchEdges     = [];       // virtual edges: queryNode → matched courses
 let searchHitIds    = new Set(); // top-N course IDs that get labels + edges in SEARCH
 let searchHitRanks  = new Map(); // id → rank (0 = best match) for sizing
+let filterHitIds    = new Set(); // filter-mode matches — overlaid on any view
+let activeFilters   = null;     // current Filters dict when filter mode is active
 
 let T   = d3.zoomIdentity;
 let sim = null;
@@ -273,7 +291,12 @@ function nodeColor(n) {
     if (d === 0) return '#2563eb';
     if (d !== undefined) return PREREQ_COLORS[Math.min(d - 1, PREREQ_COLORS.length - 1)];
     if (selSuccIds.has(n.id)) return '#d97706';
+    // Background nodes: filter overlay takes priority over plain ghost
+    if (filterHitIds.size > 0) return filterHitIds.has(n.id) ? baseColor(n) : ghostColor(n);
     return ghostColor(n);
+  }
+  if (filterHitIds.size > 0) {
+    return filterHitIds.has(n.id) ? baseColor(n) : ghostColor(n);
   }
   if (VIEW === 'SEARCH') {
     return searchHitIds.has(n.id) ? baseColor(n) : ghostColor(n);
@@ -347,6 +370,8 @@ function deptCentroids() {
 function startGalaxy() {
   VIEW = 'GALAXY';
   selected = null; searchScores = {}; searchHitIds = new Set(); searchHitRanks = new Map();
+  filterHitIds = new Set();
+  activeFilters = null;
   prereqDepths = new Map(); selSuccIds = new Set(); selRelEdges = [];
   searchQuery = ''; searchQueryNode = null; searchEdges = [];
   nodes.forEach(n => { n.fx = null; n.fy = null; });
@@ -602,6 +627,7 @@ function nodeR(n) {
     if (rank !== undefined) return Math.max(7, 14 - rank * 0.37); // rank 0→14px, rank 19→7px
     return 3;
   }
+  if (filterHitIds.size > 0) return filterHitIds.has(n.id) ? 5 : 3;
   return 3;
 }
 
@@ -949,16 +975,36 @@ document.getElementById('detail-close').addEventListener('click', () => {
 
 const searchInput = document.getElementById('search-input');
 
+function applyFilter(filterIds, intent) {
+  // Filter is an overlay — stays in whatever view is active (GALAXY or SELECTED).
+  // If coming from radial SEARCH view, reset to GALAXY first.
+  if (VIEW === 'SEARCH') startGalaxy();
+  filterHitIds = new Set(filterIds);
+  setFilterChips(intent?.filters ?? {});
+  setHint(intent?.explanation || `${filterIds.length} courses matched`);
+  setIntentTags([]);
+  draw();
+}
+
 async function doSearch(q) {
   searchInput.blur();
   setHint('Searching…');
   setIntentTags([]);
-  const { courses, scores, intent } = await fetch('/api/search', {
+  const data = await fetch('/api/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query: q, n: 20 }),
   }).then(r => r.json());
-  startSearch(courses, scores, q, intent);
+  const { courses, scores, intent } = data;
+  if (intent?.action === 'filter') {
+    // Use all matching IDs from backend (not just top-n)
+    applyFilter(data.filter_ids?.length ? data.filter_ids : courses.map(c => c.id), intent);
+  } else {
+    filterHitIds = new Set();
+    activeFilters = null;
+    setFilterChips({});
+    startSearch(courses, scores, q, intent);
+  }
 }
 
 searchInput.addEventListener('keydown', e => {
@@ -978,6 +1024,55 @@ function setIntentTags(topics) {
   intentTagsEl.innerHTML = (topics?.length)
     ? topics.map(t => `<span class="intent-tag">${t}</span>`).join('')
     : '';
+}
+
+const _esc = s => String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+
+function setFilterChips(filters) {
+  activeFilters = filters;
+  const chips = [];
+  if (filters.level === 'G') chips.push({ key: 'level', label: 'grad' });
+  if (filters.level === 'U') chips.push({ key: 'level', label: 'undergrad' });
+  (filters.depts || []).forEach(d => chips.push({ key: `dept:${d}`, label: `dept ${d}` }));
+  if (filters.max_units   != null) chips.push({ key: 'max_units',   label: `≤ ${filters.max_units} units` });
+  if (filters.min_rating  != null) chips.push({ key: 'min_rating',  label: `rating ≥ ${filters.min_rating}` });
+  if (filters.has_prereqs === true)  chips.push({ key: 'has_prereqs', label: 'has prereqs' });
+  if (filters.has_prereqs === false) chips.push({ key: 'has_prereqs', label: 'no prereqs' });
+  (filters.instructors       || []).forEach(i => chips.push({ key: `instr:${i}`, label: `by ${i}` }));
+  (filters.exclude_keywords  || []).forEach(k => chips.push({ key: `excl:${k}`,  label: `not "${k}"` }));
+  (filters.requires_courses  || []).forEach(c => chips.push({ key: `req:${c}`,   label: `needs ${c}` }));
+
+  if (!chips.length) { intentTagsEl.innerHTML = ''; return; }
+  intentTagsEl.innerHTML = chips
+    .map(({ key, label }) =>
+      `<span class="filter-chip"><span>${_esc(label)}</span><span class="fc-x" data-key="${_esc(key)}">×</span></span>`)
+    .join('');
+  intentTagsEl.querySelectorAll('.fc-x').forEach(x =>
+    x.addEventListener('click', () => removeFilterChip(x.dataset.key)));
+}
+
+async function removeFilterChip(key) {
+  if (!activeFilters) return;
+  const f = JSON.parse(JSON.stringify(activeFilters));
+  if      (key === 'level')       delete f.level;
+  else if (key === 'max_units')   delete f.max_units;
+  else if (key === 'min_rating')  delete f.min_rating;
+  else if (key === 'has_prereqs') delete f.has_prereqs;
+  else if (key.startsWith('dept:'))  f.depts            = (f.depts || []).filter(d => d !== key.slice(5));
+  else if (key.startsWith('instr:')) f.instructors       = (f.instructors || []).filter(i => i !== key.slice(6));
+  else if (key.startsWith('excl:'))  f.exclude_keywords  = (f.exclude_keywords || []).filter(k => k !== key.slice(5));
+  else if (key.startsWith('req:'))   f.requires_courses  = (f.requires_courses || []).filter(c => c !== key.slice(4));
+
+  setHint('Filtering…');
+  const data = await fetch('/api/filter', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filters: f }),
+  }).then(r => r.json());
+  filterHitIds = new Set(data.course_ids);
+  setFilterChips(f);
+  setHint(`${data.count} courses matched`);
+  draw();
 }
 
 

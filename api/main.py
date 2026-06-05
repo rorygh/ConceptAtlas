@@ -47,10 +47,38 @@ class SearchRequest(BaseModel):
     n: int = 20
 
 
+class FilterRequest(BaseModel):
+    filters: dict
+
+
+@app.post("/api/filter")
+def filter_direct(req: FilterRequest):
+    """Apply explicit filter constraints without calling the LLM.
+
+    Used by the frontend when removing a filter chip — avoids a re-LLM round-trip.
+    Returns all matching course IDs (no pagination) plus a short explanation.
+    """
+    from llm.schema import Filters
+    from llm.filters import apply_filters
+
+    try:
+        filters = Filters(**req.filters)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid filter object")
+
+    results = apply_filters(_all_courses(), filters)
+    return {
+        "course_ids":  [c["id"] for c in results],
+        "count":       len(results),
+        "filters":     req.filters,
+    }
+
+
 @app.post("/api/search")
 def search(req: SearchRequest):
     from llm.pipeline import search_with_intent
     from retrieval.search import _load, _load_embeddings
+    from llm.filters import apply_filters
 
     model, _, courses_by_id = _load()
     all_ids, E, _ = _load_embeddings()
@@ -76,6 +104,12 @@ def search(req: SearchRequest):
         if rid not in top_ids:
             top_n_ids.append(rid)
 
+    # For filter action: return ALL matching IDs so the frontend can highlight every match,
+    # not just the top-n truncation.
+    filter_ids: list[str] = []
+    if intent.action == "filter":
+        filter_ids = [c["id"] for c in apply_filters(_all_courses(), intent.filters)]
+
     return {
         "courses": [
             {
@@ -89,9 +123,11 @@ def search(req: SearchRequest):
             for c in top_courses
         ],
         "scores":      {rid: round(float(s), 4) for rid, s in zip(all_ids, raw_scores)},
+        "filter_ids":  filter_ids,
         "intent":      {
             "action":      intent.action,
             "topics":      intent.topics,
+            "filters":     intent.filters.model_dump(),
             "explanation": intent.explanation,
         },
     }
