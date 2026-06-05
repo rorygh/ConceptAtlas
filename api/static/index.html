@@ -123,6 +123,8 @@
     .chip.pre  { background: #ecfdf5; color: var(--pre);  border-color: #a7f3d0; }
     .chip.pre:hover  { background: #d1fae5; }
     .d-none   { font-size: 13px; color: var(--muted); }
+    #d-prereqs-expr { font-size: 11.5px; font-family: monospace; color: var(--muted);
+                      margin-top: 7px; line-height: 1.5; display: none; }
 
     /* ── Intent tags (LLM-extracted topics, shown below search bar) ── */
     #intent-tags {
@@ -230,6 +232,7 @@
     <div class="d-section">
       <div class="d-label">Prerequisites</div>
       <div id="d-prereqs"></div>
+      <div id="d-prereqs-expr"></div>
     </div>
     <div class="d-section">
       <div class="d-label">Related</div>

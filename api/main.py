@@ -30,6 +30,35 @@ def _flatten_prereqs(node) -> list:
     return [id_ for item in node.get("items", []) for id_ in _flatten_prereqs(item)]
 
 
+def _flatten_prereqs_with_op(node, parent_op: str = "and") -> list[dict]:
+    """Like _flatten_prereqs but each item carries the op of its immediate parent."""
+    if node is None:
+        return []
+    if isinstance(node, str):
+        if not node or node.startswith("''") or node.upper().startswith("GIR:"):
+            return []
+        return [{"id": node, "op": parent_op}]
+    op = node.get("op", "and")
+    return [item for child in node.get("items", [])
+            for item in _flatten_prereqs_with_op(child, op)]
+
+
+def _format_prereqs(node, parent_op: str | None = None) -> str:
+    """Return a human-readable prerequisite expression, e.g. '(6.036 or 6.034) and 18.06'."""
+    if node is None:
+        return ""
+    if isinstance(node, str):
+        if not node or node.startswith("''") or node.upper().startswith("GIR:"):
+            return ""
+        return node
+    op = node.get("op", "and")
+    parts = [p for child in node.get("items", []) if (p := _format_prereqs(child, op))]
+    if not parts:
+        return ""
+    expr = f" {op} ".join(parts)
+    return f"({expr})" if parent_op and parent_op != op else expr
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from retrieval.search import _load, _load_embeddings, _load_similarity_matrix
@@ -197,9 +226,9 @@ def graph():
     all_ids = {c["id"] for c in _all_courses()}
     edges = []
     for c in _all_courses():
-        for prereq in _flatten_prereqs(c.get("prerequisites")):
-            if prereq in all_ids:
-                edges.append({"source": prereq, "target": c["id"]})
+        for item in _flatten_prereqs_with_op(c.get("prerequisites")):
+            if item["id"] in all_ids:
+                edges.append({"source": item["id"], "target": c["id"], "op": item["op"]})
     return {"edges": edges}
 
 
@@ -214,6 +243,7 @@ def course(course_id: str):
                 "units":            c["units"],
                 "level":            c.get("level"),
                 "prereqs_flat":     _flatten_prereqs(c.get("prerequisites")),
+                "prereqs_expr":     _format_prereqs(c.get("prerequisites")),
                 "related_subjects": c.get("related_subjects", []),
                 "instructors":      c.get("instructors", []),
                 "url":              c.get("url"),

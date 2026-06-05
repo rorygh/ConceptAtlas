@@ -449,6 +449,7 @@ function drawEdges() {
         else if (s === hovered) { color = COLORS.successor; lw = 2; alpha = 0.9; }
       }
       if (s === selected || t === selected) { lw = Math.max(lw, 1.5); alpha = Math.max(alpha, 0.55); }
+      ctx.setLineDash(e.op === 'or' ? [4 / T.k, 3 / T.k] : []);
       ctx.beginPath();
       ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y);
       ctx.strokeStyle = color;
@@ -456,6 +457,7 @@ function drawEdges() {
       ctx.globalAlpha = alpha;
       ctx.stroke();
     });
+    ctx.setLineDash([]);
     ctx.globalAlpha = 1;
     ctx.restore();
   }
@@ -748,6 +750,9 @@ async function openDetail(id) {
   }
 
   document.getElementById('d-prereqs').innerHTML = chips(c.prereqs_flat, 'pre');
+  const exprEl = document.getElementById('d-prereqs-expr');
+  exprEl.textContent = c.prereqs_expr || '';
+  exprEl.style.display = c.prereqs_expr ? '' : 'none';
   document.getElementById('d-related').innerHTML = chips(c.related_subjects, '');
 
   document.querySelectorAll('.chip[data-id]').forEach(el => {
