@@ -464,17 +464,8 @@ function startSelected(id) {
       if (selSuccIds.has(n.id)) return 40;
       return 4;
     }))
-    // Pull background nodes toward the selected course proportional to similarity —
-    // same mechanism as galaxy dept clustering (shared target point → real blobs).
-    // Strength 0 for unrelated courses; they stay where the scatter left them.
-    .force('sim-x', d3.forceX(W / 2).strength(n => {
-      if (prereqDepths.has(n.id) || selSuccIds.has(n.id)) return 0;
-      return Math.max(0, (n._simScore ?? 0) - 0.4) * 0.25;
-    }))
-    .force('sim-y', d3.forceY(H / 2).strength(n => {
-      if (prereqDepths.has(n.id) || selSuccIds.has(n.id)) return 0;
-      return Math.max(0, (n._simScore ?? 0) - 0.4) * 0.25;
-    }))
+    // sim-x / sim-y are NOT added here — D3 pre-computes strength arrays at
+    // initialize() time, so they must be added AFTER scores land (see async fetch below)
     .alphaDecay(0.02)
     .on('tick', tick);
 
@@ -503,7 +494,17 @@ function startSelected(id) {
         .distance(e => (1 - e.score) * 200 + 50));
     }
 
-    // Kick the sim — radial force now has real scores and will re-sort everything
+    // Add sim-x/sim-y NOW — initialize() runs here with real _simScore values baked in.
+    // Same pattern as galaxy dept clustering: shared target point → nodes converge together.
+    sim.force('sim-x', d3.forceX(W / 2).strength(n => {
+      if (prereqDepths.has(n.id) || selSuccIds.has(n.id)) return 0;
+      return Math.max(0, (n._simScore ?? 0) - 0.4) * 0.25;
+    }));
+    sim.force('sim-y', d3.forceY(H / 2).strength(n => {
+      if (prereqDepths.has(n.id) || selSuccIds.has(n.id)) return 0;
+      return Math.max(0, (n._simScore ?? 0) - 0.4) * 0.25;
+    }));
+
     sim.alpha(0.4).restart();
   }).catch(() => {});
 }
@@ -791,6 +792,7 @@ function showTip(ev, n) {
     else if (d === 1)         rel = ' · direct prerequisite';
     else if (d !== undefined) rel = ` · prereq (depth ${d})`;
     else if (selSuccIds.has(n.id)) rel = ' · enabled by this';
+    if (d !== 0 && n._simScore > 0) rel += ` · ${Math.round(n._simScore * 100)}% similar`;
   } else if (VIEW === 'SEARCH' && searchScores[n.id] > 0) {
     rel = ` · ${Math.round(searchScores[n.id] * 100)}% match`;
   }
