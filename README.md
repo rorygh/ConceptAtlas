@@ -102,8 +102,15 @@ docker push rorygh/conceptatlas:latest
 
 Or trigger the **Push Docker Image** GitHub Actions workflow from the Actions tab (manual dispatch). Requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets set in the repo.
 
-**Pod environment variables:**
-- `RUNPOD_GITHUB_TOKEN` — GitHub PAT (repo read scope)
-- `ANTHROPIC_API_KEY` — Anthropic API key
+First-time setup on pod: run `/setup.sh` then `cd /workspace/ConceptAtlas`.
 
-First-time setup on pod: run `/setup.sh` then `cd /workspace/ConceptNavigator`.
+## Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key — used by the LLM intent extraction layer |
+| `RUNPOD_GITHUB_TOKEN` | Deployment | GitHub PAT (repo:read scope) — used by `setup.sh` to clone the repo on pod start |
+| `DOCKERHUB_USERNAME` | CI | Docker Hub username — GitHub Actions secret for the push workflow |
+| `DOCKERHUB_TOKEN` | CI | Docker Hub access token — GitHub Actions secret for the push workflow |
+
+Copy `.env.example` to `.env` and fill in `ANTHROPIC_API_KEY` for local development.

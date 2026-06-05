@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEST="/workspace/ConceptNavigator"
+DEST="/workspace/ConceptAtlas"
 
 # Clone repo
 if [ -d "$DEST" ]; then
     echo "==> $DEST already exists, skipping clone"
 else
     echo "==> Cloning repo..."
-    git clone "https://${RUNPOD_GITHUB_TOKEN}@github.com/rorygh/ConceptNavigator.git" "$DEST"
+    git clone "https://${RUNPOD_GITHUB_TOKEN}@github.com/rorygh/ConceptAtlas.git" "$DEST"
 fi
 
 cd "$DEST"

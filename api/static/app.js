@@ -53,17 +53,36 @@ let qt  = null;
 // COLOR SYSTEM
 // ═══════════════════════════════════════════════════════════════
 
+const COLORS = {
+  accent:    '#2563eb',                         // selected ring, query X, ID labels
+  prereq:   ['#059669', '#0891b2', '#7c3aed'],  // prereq node depths 1, 2, 3+
+  successor: '#d97706',                         // successor nodes + hover edge-out
+  edgeBase:  '#cbd5e1',                         // default prereq edge stroke
+  labelId:   '#2563eb',                         // course-ID label text
+  labelTitle:'#0f172a',                         // course title label text
+  levelU:    '#3b82f6',                         // undergraduate (level color mode)
+  levelG:    '#8b5cf6',                         // graduate (level color mode)
+  nodeMuted: '#94a3b8',                         // unknown/fallback department
+};
+
+// DJB2 hash — stable per-node jitter for ring placement
+function djb2(n) {
+  let h = 5381;
+  for (let i = 0; i < n.id.length; i++) h = ((h << 5) + h + n.id.charCodeAt(i)) | 0;
+  return h;
+}
+
 const deptScale = d3.scaleOrdinal(d3.schemeTableau10);
 
 const COLOR_MODES = {
   department: n => deptScale(n.dept),
-  level:      n => ({ U: '#3b82f6', G: '#8b5cf6' }[n.level] ?? '#94a3b8'),
+  level:      n => ({ U: COLORS.levelU, G: COLORS.levelG }[n.level] ?? COLORS.nodeMuted),
   units:      n => d3.interpolateYlOrRd(Math.min(n.units || 9, 24) / 24),
 };
 let colorMode = 'department';
 
 function baseColor(n) {
-  return COLOR_MODES[colorMode]?.(n) ?? '#94a3b8';
+  return COLOR_MODES[colorMode]?.(n) ?? COLORS.nodeMuted;
 }
 
 function ghostColor(n) {
@@ -76,9 +95,9 @@ function ghostColor(n) {
 function nodeColor(n) {
   if (VIEW === 'SELECTED') {
     const d = prereqDepths.get(n.id);
-    if (d === 0) return '#2563eb';
-    if (d !== undefined) return PREREQ_COLORS[Math.min(d - 1, PREREQ_COLORS.length - 1)];
-    if (selSuccIds.has(n.id)) return '#d97706';
+    if (d === 0) return COLORS.accent;
+    if (d !== undefined) return COLORS.prereq[Math.min(d - 1, COLORS.prereq.length - 1)];
+    if (selSuccIds.has(n.id)) return COLORS.successor;
     if (filterHitIds.size > 0) return filterHitIds.has(n.id) ? baseColor(n) : ghostColor(n);
     return ghostColor(n);
   }
@@ -205,7 +224,6 @@ function startSearch(results, allScores, query, intent = null) {
   resetZoom();
 
   const outerR = Math.min(W, H) * 0.46;
-  const djb2 = n => { let h = 5381; for (let i = 0; i < n.id.length; i++) h = ((h << 5) + h + n.id.charCodeAt(i)) | 0; return h; };
 
   const ringR = n => {
     const rank = searchHitRanks.get(n.id);
@@ -279,7 +297,6 @@ function startSelected(id) {
 
   nodes.forEach(n => { n._simScore = 0; });
   const outerR = Math.min(W, H) * 0.46;
-  const djb2 = n => { let h = 5381; for (let i = 0; i < n.id.length; i++) h = ((h << 5) + h + n.id.charCodeAt(i)) | 0; return h; };
 
   function buildRingFns() {
     const bgScores = nodes
@@ -400,7 +417,6 @@ function startSelected(id) {
 // DRAWING
 // ═══════════════════════════════════════════════════════════════
 
-const PREREQ_COLORS = ['#059669', '#0891b2', '#7c3aed'];
 
 function nodeR(n) {
   if (VIEW === 'SELECTED') {
@@ -427,10 +443,10 @@ function drawEdges() {
     selRelEdges.forEach(e => {
       const s = e.source, t = e.target;
       if (!isFinite(s.x) || !isFinite(t.x)) return;
-      let color = '#cbd5e1', lw = 1, alpha = 0.45;
+      let color = COLORS.edgeBase, lw = 1, alpha = 0.45;
       if (hovered) {
-        if (t === hovered) { color = '#059669'; lw = 2; alpha = 0.9; }
-        else if (s === hovered) { color = '#d97706'; lw = 2; alpha = 0.9; }
+        if (t === hovered) { color = COLORS.prereq[0]; lw = 2; alpha = 0.9; }
+        else if (s === hovered) { color = COLORS.successor; lw = 2; alpha = 0.9; }
       }
       if (s === selected || t === selected) { lw = Math.max(lw, 1.5); alpha = Math.max(alpha, 0.55); }
       ctx.beginPath();
@@ -447,7 +463,7 @@ function drawEdges() {
   if (VIEW === 'SEARCH' && searchQueryNode && searchEdges.length) {
     ctx.save();
     ctx.lineCap = 'round';
-    ctx.strokeStyle = '#2563eb';
+    ctx.strokeStyle = COLORS.accent;
     ctx.lineWidth = 1 / T.k;
     searchEdges.forEach(e => {
       const t = e.target;
@@ -492,7 +508,7 @@ function drawNodes() {
     const r = nodeR(n) + (i === 1 ? 4 : 2.5);
     ctx.beginPath();
     ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
-    ctx.strokeStyle = '#2563eb';
+    ctx.strokeStyle = COLORS.accent;
     ctx.lineWidth   = (i === 1 ? 2 : 1.5) / T.k;
     ctx.stroke();
   });
@@ -506,7 +522,7 @@ function drawNodes() {
     ctx.strokeStyle = 'rgba(37,99,235,0.12)';
     ctx.lineWidth = 1.5 / T.k;
     ctx.stroke();
-    ctx.strokeStyle = '#2563eb';
+    ctx.strokeStyle = COLORS.accent;
     ctx.lineWidth   = 2.5 / T.k;
     ctx.lineCap     = 'round';
     ctx.beginPath();
@@ -575,7 +591,7 @@ function drawLabels() {
 
     ctx.font = `700 ${idSize}px -apple-system, sans-serif`;
     halo(n.id, n.x, idY);
-    ctx.fillStyle = '#2563eb';
+    ctx.fillStyle = COLORS.labelId;
     ctx.fillText(n.id, n.x, idY);
 
     const showTitle = big || labelDepth === 1 || labelDepth === -1 || VIEW === 'SEARCH';
@@ -587,7 +603,7 @@ function drawLabels() {
       lines.forEach((line, i) => {
         const y = n.y + r + fontSize + 2 + i * LINE_H;
         halo(line, n.x, y);
-        ctx.fillStyle = '#0f172a';
+        ctx.fillStyle = COLORS.labelTitle;
         ctx.fillText(line, n.x, y);
       });
     }
@@ -599,7 +615,7 @@ function drawLabels() {
     const { x, y } = searchQueryNode;
     const ly = y + 24;
     halo(searchQuery, x, ly);
-    ctx.fillStyle = '#2563eb';
+    ctx.fillStyle = COLORS.labelId;
     ctx.fillText(searchQuery, x, ly);
   }
 }

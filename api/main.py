@@ -148,22 +148,13 @@ def search(req: SearchRequest):
     # shape: (num_courses,) — best match across all topics
     raw_scores = (E @ topic_vecs.T).max(axis=1).tolist()
 
-    top_ids = {c["id"] for c in top_courses}
-    scored = sorted(zip(all_ids, raw_scores), key=lambda x: -x[1])
-    # Use LLM-ranked courses as top_n; fill remaining slots from score order if needed
-    top_n_ids = [c["id"] for c in top_courses]
-    for rid, _ in scored:
-        if len(top_n_ids) >= req.n:
-            break
-        if rid not in top_ids:
-            top_n_ids.append(rid)
-
     # For filter action: return ALL matching IDs so the frontend can highlight every match,
     # not just the top-n truncation.
     filter_ids: list[str] = []
     if intent.action == "filter":
         filter_ids = [c["id"] for c in apply_filters(_all_courses(), intent.filters)]
 
+    score_by_id = dict(zip(all_ids, raw_scores))
     return {
         "courses": [
             {
@@ -172,7 +163,7 @@ def search(req: SearchRequest):
                 "description": c.get("description"),
                 "units":       c.get("units"),
                 "level":       c.get("level"),
-                "score":       round(float(dict(zip(all_ids, raw_scores)).get(c["id"], 0)), 4),
+                "score":       round(float(score_by_id.get(c["id"], 0)), 4),
             }
             for c in top_courses
         ],
