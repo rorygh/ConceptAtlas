@@ -406,6 +406,9 @@ function startSelected(id) {
   const relIds = new Set([...prereqDepths.keys(), ...selSuccIds]);
   selRelEdges  = edges.filter(e => relIds.has(e.source.id) && relIds.has(e.target.id));
 
+  // Clear similarity scores from previous selection before scattering
+  nodes.forEach(n => { n._simScore = 0; });
+
   // Scatter all nodes so each selection visibly re-settles from a fresh layout.
   nodes.forEach(n => {
     n.fx = null; n.fy = null;
@@ -472,23 +475,45 @@ function startSelected(id) {
   const total = prereqDepths.size - 1;
   setHint(`${selected.id}  ·  ${total} prerequisite${total !== 1 ? 's' : ''}  ·  enables ${selSuccIds.size}`);
 
-  // Asynchronously fetch semantic similarity and add a gentle clustering force
+  // Asynchronously fetch semantic similarity.
+  // Similar prereq/succ nodes get a tighter spring; similar background nodes
+  // get a weaker spring so they drift toward the selected course organically.
   const snapId = id;
   fetch(`/api/similar/${id}`).then(r => r.json()).then(({ similar }) => {
     if (VIEW !== 'SELECTED' || selected?.id !== snapId || !sim) return;
+
     const simMap = new Map(similar.map(({ id: sid, score }) => [sid, score]));
     const relSet = new Set([...prereqDepths.keys(), ...selSuccIds]);
-    const simLinks = [];
+
+    // Tag every node with its cosine similarity to the selected course (0 if not in top-20)
     simMap.forEach((score, sid) => {
-      if (relSet.has(sid) && sid !== snapId && nodeById[sid])
-        simLinks.push({ source: nodeById[sid], target: selected, score });
+      if (nodeById[sid]) nodeById[sid]._simScore = score;
     });
-    if (simLinks.length) {
-      sim.force('similarity', d3.forceLink(simLinks)
+
+    const relLinks = [];   // springs for prereq/succ nodes
+    const bgLinks  = [];   // springs for background nodes
+
+    simMap.forEach((score, sid) => {
+      if (!nodeById[sid] || sid === snapId) return;
+      const link = { source: nodeById[sid], target: selected, score };
+      if (relSet.has(sid)) relLinks.push(link);
+      else bgLinks.push(link);
+    });
+
+    if (relLinks.length) {
+      sim.force('similarity', d3.forceLink(relLinks)
         .strength(e => e.score * 0.12)
         .distance(e => (1 - e.score) * 200 + 50));
-      sim.alpha(0.25).restart();
     }
+
+    if (bgLinks.length) {
+      // Weaker pull for background nodes — they drift closer but don't crowd the prereqs
+      sim.force('bg-similarity', d3.forceLink(bgLinks)
+        .strength(e => e.score * 0.04)
+        .distance(e => (1 - e.score) * 250 + 120));
+    }
+
+    sim.alpha(0.3).restart();
   }).catch(() => {});
 }
 

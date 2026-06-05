@@ -109,11 +109,16 @@ def similar_courses(course_id: str):
     stored = collection.get(ids=[course_id], include=["embeddings"])
     if stored["embeddings"] is None or len(stored["embeddings"]) == 0:
         raise HTTPException(status_code=404, detail="No embedding found")
-    results = collection.query(query_embeddings=[stored["embeddings"][0]], n_results=21)
+    results = collection.query(
+        query_embeddings=[stored["embeddings"][0]],
+        n_results=21,
+        include=["distances"],
+    )
+    # Default ChromaDB metric is L2; for unit vectors: cos_sim = 1 - l2_dist / 2
     return {
         "similar": [
-            {"id": rid, "score": round(1 - i / 20, 3)}
-            for i, rid in enumerate(results["ids"][0])
+            {"id": rid, "score": round(1 - dist / 2, 3)}
+            for rid, dist in zip(results["ids"][0], results["distances"][0])
             if rid != course_id
         ][:20]
     }
