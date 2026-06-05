@@ -533,6 +533,17 @@ function prefetchSimilarity(id) {
 }
 
 function startSelected(id) {
+  // Filter chips in SEARCH mode are part of the search context, not a persistent
+  // overlay — clear them when entering SELECTED so they don't show stale state.
+  // Galaxy-mode filterHitIds (set by applyFilter) DO persist into SELECTED view.
+  if (VIEW === 'SEARCH') {
+    filterHitIds = new Set();
+    activeFilters = null;
+    searchTopics = [];
+    intentTagsEl.innerHTML = '';
+    filterPanelEl.hidden = true;
+  }
+
   VIEW = 'SELECTED';
   searchQuery = ''; searchQueryNode = null; searchEdges = [];
   searchHitIds = new Set(); searchHitRanks = new Map();
