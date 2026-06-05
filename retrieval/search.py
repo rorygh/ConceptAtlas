@@ -8,6 +8,7 @@ from sentence_transformers import SentenceTransformer
 
 CHROMA_PATH = Path(__file__).parent.parent / "data" / "chroma"
 COURSES_PATH = Path(__file__).parent.parent / "data" / "courses.json"
+SIM_PATH     = Path(__file__).parent.parent / "data" / "similarity.npy"
 
 
 @lru_cache(maxsize=1)
@@ -32,6 +33,19 @@ def _load_embeddings() -> tuple[list[str], np.ndarray, dict[str, int]]:
     E = np.array(data["embeddings"], dtype=np.float32)
     id_to_idx = {rid: i for i, rid in enumerate(ids)}
     return ids, E, id_to_idx
+
+
+@lru_cache(maxsize=1)
+def _load_similarity_matrix() -> np.ndarray:
+    """Load the all-pairs cosine similarity matrix (float16, ~100 MB).
+
+    Normally written by ingest/embed_courses.py to data/similarity.npy.
+    Falls back to computing on demand if the file doesn't exist.
+    """
+    if SIM_PATH.exists():
+        return np.load(SIM_PATH)
+    _, E, _ = _load_embeddings()
+    return (E @ E.T).astype(np.float16)
 
 
 def search(query: str, n: int = 5) -> list[dict]:

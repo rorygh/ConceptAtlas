@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -18,11 +20,36 @@ class Filters(BaseModel):
         default_factory=list,
         description="Words/phrases that must NOT appear in the course title or description.",
     )
+    instructors: list[str] = Field(
+        default_factory=list,
+        description="Instructor name substrings to match, e.g. ['Williams']. Empty = any instructor.",
+    )
+    min_rating: float | None = Field(
+        None,
+        description="Minimum course rating (scale ~0-7). null = no minimum.",
+    )
+    has_prereqs: bool | None = Field(
+        None,
+        description="True = only courses WITH prerequisites, False = only courses with NO prerequisites, null = no restriction.",
+    )
+    requires_courses: list[str] = Field(
+        default_factory=list,
+        description="Course IDs that must appear in the course's own prerequisite list, e.g. ['18.06', '6.042J'].",
+    )
 
 
 class LearningIntent(BaseModel):
+    action: Literal["search", "filter"] = Field(
+        description=(
+            "'search' = semantic vector search then filter (use when user wants to discover courses by topic). "
+            "'filter' = apply filters to all courses with no semantic search "
+            "(use when user specifies concrete constraints with no open-ended topic, "
+            "e.g. 'show me courses by Williams', 'list grad EECS courses under 9 units')."
+        ),
+    )
     topics: list[str] = Field(
-        description="2-5 specific academic concepts to search for semantically.",
+        default_factory=list,
+        description="Academic concepts to embed and search for. Required when action='search', empty when action='filter'.",
     )
     filters: Filters = Field(
         default_factory=Filters,

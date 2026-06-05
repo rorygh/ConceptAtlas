@@ -2,10 +2,12 @@ import json
 from pathlib import Path
 
 import chromadb
+import numpy as np
 from sentence_transformers import SentenceTransformer
 
 COURSES_PATH = Path(__file__).parent.parent / "data" / "courses.json"
-CHROMA_PATH = Path(__file__).parent.parent / "data" / "chroma"
+CHROMA_PATH  = Path(__file__).parent.parent / "data" / "chroma"
+SIM_PATH     = Path(__file__).parent.parent / "data" / "similarity.npy"
 
 
 def embed():
@@ -46,6 +48,15 @@ def embed():
         )
 
     print(f"Done. {collection.count()} courses indexed → {CHROMA_PATH}")
+
+    # All-pairs cosine similarity matrix — computed once here so startup is instant.
+    # Normalize explicitly; shape: (n_courses, n_courses), dtype float16 (~100 MB).
+    print("Computing all-pairs similarity matrix...")
+    E = embeddings.astype(np.float32)
+    norms = np.linalg.norm(E, axis=1, keepdims=True)
+    E_norm = E / np.where(norms > 0, norms, 1.0)
+    np.save(SIM_PATH, (E_norm @ E_norm.T).astype(np.float16))
+    print(f"Saved similarity matrix {E_norm.shape[0]}×{E_norm.shape[0]} → {SIM_PATH}")
 
 
 if __name__ == "__main__":

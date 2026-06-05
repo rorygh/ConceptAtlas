@@ -13,8 +13,8 @@ def _get_client() -> anthropic.Anthropic:
 
 
 _SYSTEM = """\
-You are a learning assistant for MIT OpenCourseWare. Parse the user's learning goal into \
-structured search intent.
+You are a learning assistant for MIT OpenCourseWare. Parse the user's query into structured \
+search intent.
 
 MIT department numbers for reference:
 1=Civil Eng  2=Mech Eng  3=Materials  4=Architecture  5=Chemistry  6=EECS  7=Biology
@@ -22,8 +22,21 @@ MIT department numbers for reference:
 14=Economics  15=Sloan (Management)  16=AeroAstro  17=Political Sci  18=Mathematics
 20=Biological Eng  22=Nuclear Sci  24=Philosophy  HST=Health Sci & Tech
 
-Extract what the user wants to learn (topics) and any hard constraints they mention \
-(level, department, unit limits, topics to avoid)."""
+Course ratings are on a 0–7 scale.
+Instructor names in the data are abbreviated (e.g. "J. Williams") — match by last name only.
+
+Decide between two actions:
+- "search": user wants to discover courses by topic/subject (use semantic vector search + filters)
+- "filter": user specifies concrete constraints with no open-ended topic \
+(e.g. "show courses by Williams", "list no-prereq EECS courses", "grad math under 9 units")
+
+Extract topics (for search), hard constraints (level, dept, units, instructor, rating, \
+prereqs, excluded keywords), and which action to take.
+
+For the `level` filter: only set it when the user explicitly says "undergraduate", "undergrad", \
+"grad", "graduate", "master's", "PhD", or similar explicit level words. \
+Do NOT infer level from words like "beginner", "introductory", "from scratch", "basic", or "advanced" \
+— those describe difficulty, not academic level."""
 
 # Tool schema for structured extraction — forces Claude to return validated JSON
 _EXTRACT_TOOL = {
@@ -31,14 +44,18 @@ _EXTRACT_TOOL = {
     "description": "Return structured learning intent extracted from the user query.",
     "input_schema": {
         "type": "object",
-        "required": ["topics", "filters", "explanation"],
+        "required": ["action", "topics", "filters", "explanation"],
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["search", "filter"],
+                "description": "'search' for topic-driven discovery, 'filter' for constraint-only queries",
+            },
             "topics": {
                 "type": "array",
                 "items": {"type": "string"},
-                "minItems": 1,
                 "maxItems": 6,
-                "description": "Academic concepts to embed and search for, e.g. 'machine learning', 'linear algebra'",
+                "description": "Academic concepts to embed and search for. Empty array when action='filter'.",
             },
             "filters": {
                 "type": "object",
@@ -61,6 +78,24 @@ _EXTRACT_TOOL = {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Words that must not appear in course text",
+                    },
+                    "instructors": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Instructor last names to match, e.g. ['Williams']",
+                    },
+                    "min_rating": {
+                        "type": ["number", "null"],
+                        "description": "Minimum rating on 0-7 scale",
+                    },
+                    "has_prereqs": {
+                        "type": ["boolean", "null"],
+                        "description": "true=must have prereqs, false=must have none, null=no restriction",
+                    },
+                    "requires_courses": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Course IDs that must be in the course's prerequisites, e.g. ['18.06']",
                     },
                 },
             },
@@ -97,10 +132,15 @@ def extract_intent(query: str) -> LearningIntent:
         depts=raw_filters.get("depts", []),
         max_units=raw_filters.get("max_units"),
         exclude_keywords=raw_filters.get("exclude_keywords", []),
+        instructors=raw_filters.get("instructors", []),
+        min_rating=raw_filters.get("min_rating"),
+        has_prereqs=raw_filters.get("has_prereqs"),
+        requires_courses=raw_filters.get("requires_courses", []),
     )
 
     return LearningIntent(
-        topics=data["topics"],
+        action=data.get("action", "search"),
+        topics=data.get("topics", []),
         filters=filters,
         explanation=data.get("explanation", ""),
     )

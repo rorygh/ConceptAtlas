@@ -1,4 +1,5 @@
 import json
+import numpy as np
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -31,9 +32,10 @@ def _flatten_prereqs(node) -> list:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from retrieval.search import _load, _load_embeddings
+    from retrieval.search import _load, _load_embeddings, _load_similarity_matrix
     _load()
-    _load_embeddings()   # pre-cache full embedding matrix (~10 MB) so first request is instant
+    _load_embeddings()
+    _load_similarity_matrix()   # precompute all-pairs cosine matrix (~100 MB) at startup
     yield
 
 
@@ -42,19 +44,56 @@ app = FastAPI(lifespan=lifespan)
 
 class SearchRequest(BaseModel):
     query: str
-    n: int = 10
+    n: int = 20
 
 
 @app.post("/api/search")
 def search(req: SearchRequest):
-    from retrieval.search import search as _search
-    results = _search(req.query, n=req.n)
+    from llm.pipeline import search_with_intent
+    from retrieval.search import _load, _load_embeddings
+
+    model, _, courses_by_id = _load()
+    all_ids, E, _ = _load_embeddings()
+
+    result = search_with_intent(req.query, n=req.n)
+    intent = result["intent"]
+    top_courses = result["courses"]
+
+    # Score every course: embed each extracted topic, take the max cosine similarity.
+    # Falls back to embedding the raw query when no topics were extracted (filter-only queries).
+    terms = intent.topics if intent.topics else [req.query]
+    topic_vecs = model.encode(terms, normalize_embeddings=True).astype(np.float32)
+    # shape: (num_courses,) — best match across all topics
+    raw_scores = (E @ topic_vecs.T).max(axis=1).tolist()
+
+    top_ids = {c["id"] for c in top_courses}
+    scored = sorted(zip(all_ids, raw_scores), key=lambda x: -x[1])
+    # Use LLM-ranked courses as top_n; fill remaining slots from score order if needed
+    top_n_ids = [c["id"] for c in top_courses]
+    for rid, _ in scored:
+        if len(top_n_ids) >= req.n:
+            break
+        if rid not in top_ids:
+            top_n_ids.append(rid)
+
     return {
         "courses": [
-            {"id": c["id"], "title": c["title"], "description": c["description"],
-             "units": c["units"], "level": c.get("level")}
-            for c in results
-        ]
+            {
+                "id":          c["id"],
+                "title":       c["title"],
+                "description": c.get("description"),
+                "units":       c.get("units"),
+                "level":       c.get("level"),
+                "score":       round(float(dict(zip(all_ids, raw_scores)).get(c["id"], 0)), 4),
+            }
+            for c in top_courses
+        ],
+        "scores":      {rid: round(float(s), 4) for rid, s in zip(all_ids, raw_scores)},
+        "intent":      {
+            "action":      intent.action,
+            "topics":      intent.topics,
+            "explanation": intent.explanation,
+        },
     }
 
 
@@ -103,18 +142,19 @@ def course(course_id: str):
 
 @app.get("/api/similar/{course_id:path}")
 def similar_courses(course_id: str):
-    from retrieval.search import _load, _load_embeddings
+    from retrieval.search import _load, _load_embeddings, _load_similarity_matrix
     _, _, courses_by_id = _load()
     if course_id not in courses_by_id:
         raise HTTPException(status_code=404, detail="Not found")
 
-    all_ids, E, id_to_idx = _load_embeddings()
+    all_ids, _, id_to_idx = _load_embeddings()
     idx = id_to_idx.get(course_id)
     if idx is None:
         raise HTTPException(status_code=404, detail="No embedding found")
 
-    # Single matrix multiply → cosine similarity against all 7,083 courses at once
-    scores = (E @ E[idx]).tolist()
+    # O(1) row lookup into precomputed all-pairs matrix
+    S = _load_similarity_matrix()
+    scores = S[idx].astype(np.float32).tolist()
 
     return {
         "similar": {

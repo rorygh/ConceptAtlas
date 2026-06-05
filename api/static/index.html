@@ -123,6 +123,20 @@
     .chip.pre  { background: #ecfdf5; color: var(--pre);  border-color: #a7f3d0; }
     .chip.pre:hover  { background: #d1fae5; }
     .d-none   { font-size: 13px; color: var(--muted); }
+
+    /* ── Intent tags (LLM-extracted topics, shown below search bar) ── */
+    #intent-tags {
+      display: flex; flex-wrap: wrap; gap: 5px;
+      padding: 7px 6px 0;
+    }
+    #intent-tags:empty { padding: 0; }
+    .intent-tag {
+      font-size: 11px; font-weight: 500; letter-spacing: 0.02em;
+      color: var(--accent); background: rgba(37,99,235,0.08);
+      border: 1px solid rgba(37,99,235,0.18);
+      border-radius: 20px; padding: 2px 9px;
+      pointer-events: none; user-select: none;
+    }
   </style>
 </head>
 <body>
@@ -175,6 +189,7 @@
     <input id="search-input" type="text" autocomplete="off" spellcheck="false"
            placeholder="What do you want to learn?" />
   </div>
+  <div id="intent-tags"></div>
 </div>
 
 <script src="https://d3js.org/d3.v7.min.js"></script>
@@ -217,9 +232,13 @@ let selRelEdges  = [];
 let searchQuery     = '';
 let searchQueryNode = null;     // virtual X node pinned at center in SEARCH view
 let searchEdges     = [];       // virtual edges: queryNode → matched courses
+let searchHitIds    = new Set(); // top-N course IDs that get labels + edges in SEARCH
+let searchHitRanks  = new Map(); // id → rank (0 = best match) for sizing
 
 let T   = d3.zoomIdentity;
 let sim = null;
+
+const simCache = {}; // course id → similar dict (null while in-flight)
 let qt  = null;
 
 
@@ -257,7 +276,7 @@ function nodeColor(n) {
     return ghostColor(n);
   }
   if (VIEW === 'SEARCH') {
-    return searchScores[n.id] > 0 ? baseColor(n) : ghostColor(n);
+    return searchHitIds.has(n.id) ? baseColor(n) : ghostColor(n);
   }
   return baseColor(n);
 }
@@ -327,7 +346,7 @@ function deptCentroids() {
 
 function startGalaxy() {
   VIEW = 'GALAXY';
-  selected = null; searchScores = {};
+  selected = null; searchScores = {}; searchHitIds = new Set(); searchHitRanks = new Map();
   prereqDepths = new Map(); selSuccIds = new Set(); selRelEdges = [];
   searchQuery = ''; searchQueryNode = null; searchEdges = [];
   nodes.forEach(n => { n.fx = null; n.fy = null; });
@@ -343,6 +362,7 @@ function startGalaxy() {
     .on('tick', tick);
 
   setHint(null);
+  setIntentTags([]);
   document.getElementById('detail').classList.remove('open');
 }
 
@@ -351,19 +371,21 @@ function startGalaxy() {
 // VIEW: SEARCH — X marker at centre, matched courses radiate out
 // ═══════════════════════════════════════════════════════════════
 
-function startSearch(results, query) {
+function startSearch(results, allScores, query, intent = null) {
   VIEW = 'SEARCH';
   selected = null;
   prereqDepths = new Map(); selSuccIds = new Set(); selRelEdges = [];
 
-  searchQuery = query;
-  searchScores = {};
-  results.forEach((c, i) => { searchScores[c.id] = 1 - i / results.length; });
+  searchQuery  = query;
+  searchScores = allScores;   // actual cosine similarity for every course
+
+  searchHitIds   = new Set(results.map(c => c.id));
+  searchHitRanks = new Map(results.map((c, i) => [c.id, i]));
 
   // Virtual query node pinned at canvas centre
   searchQueryNode = { id: '__query__', x: W/2, y: H/2, fx: W/2, fy: H/2 };
 
-  // Virtual edges from query node to each matched course
+  // Edges from query node to top-N hits only
   searchEdges = results
     .map(c => ({ source: searchQueryNode, target: nodeById[c.id] }))
     .filter(e => e.target);
@@ -371,21 +393,43 @@ function startSearch(results, query) {
   nodes.forEach(n => { n.fx = null; n.fy = null; });
   resetZoom();
 
+  const outerR = Math.min(W, H) * 0.46;
+  const djb2 = n => { let h = 5381; for (let i = 0; i < n.id.length; i++) h = ((h << 5) + h + n.id.charCodeAt(i)) | 0; return h; };
+
+  // Hits: rank-based rings 60–240px so rank 0 is innermost, rank 19 outermost hit.
+  // Non-hits: outer ring — always outside the hit cluster.
+  const ringR = n => {
+    const rank = searchHitRanks.get(n.id);
+    if (rank !== undefined) {
+      const base = 60 + (rank / Math.max(1, results.length - 1)) * 180;
+      return Math.max(30, base + ((djb2(n) & 0xff) / 127.5 - 1) * 15);
+    }
+    return Math.max(outerR * 0.85, outerR + ((djb2(n) & 0xff) / 127.5 - 1) * 28);
+  };
+
+  // Pre-place all nodes so the first frame looks like the final layout
+  nodes.forEach(n => {
+    const r = ringR(n);
+    const angle = Math.random() * 2 * Math.PI;
+    n.x = W / 2 + Math.cos(angle) * r;
+    n.y = H / 2 + Math.sin(angle) * r;
+    n.vx = 0; n.vy = 0;
+  });
+
   stopSim();
   sim = d3.forceSimulation(nodes)
-    .force('radial', d3.forceRadial(n => {
-      const s = searchScores[n.id] ?? 0;
-      // Matched: 50–250px from center by score. Background: ~60% of shorter screen dim.
-      return s > 0 ? (1 - s) * 200 + 50 : Math.min(W, H) * 0.30;
-    }, W/2, H/2).strength(n => searchScores[n.id] > 0 ? 0.85 : 0.14))
+    .force('radial', d3.forceRadial(n => ringR(n), W/2, H/2).strength(n => {
+      return searchHitIds.has(n.id) ? 0.85 : 0.15;
+    }))
     .force('charge', d3.forceManyBody()
-      .strength(n => searchScores[n.id] > 0 ? -80 : -2))
-    .force('coll',   d3.forceCollide(n => searchScores[n.id] > 0 ? 42 : 4)
+      .strength(n => searchHitIds.has(n.id) ? -80 : -1))
+    .force('coll',   d3.forceCollide(n => searchHitIds.has(n.id) ? 42 : 4)
       .strength(0.8))
     .alphaDecay(0.016)
     .on('tick', tick);
 
-  setHint(`${results.length} courses matched — click to explore`);
+  setIntentTags(intent?.topics || []);
+  setHint(intent?.explanation || `${results.length} courses matched — click to explore`);
 }
 
 
@@ -393,120 +437,148 @@ function startSearch(results, query) {
 // VIEW: SELECTED — focal course + full prereq chain + successors
 // ═══════════════════════════════════════════════════════════════
 
+function prefetchSimilarity(id) {
+  if (id in simCache) return;
+  simCache[id] = null; // in-flight marker
+  fetch(`/api/similar/${encodeURIComponent(id)}`)
+    .then(r => r.json())
+    .then(({ similar }) => { simCache[id] = similar; })
+    .catch(() => { delete simCache[id]; });
+}
+
 function startSelected(id) {
   VIEW = 'SELECTED';
   searchQuery = ''; searchQueryNode = null; searchEdges = [];
+  searchHitIds = new Set(); searchHitRanks = new Map();
   selected = nodeById[id];
   if (!selected) return;
 
-  // Full transitive prereq chain (no depth limit)
   prereqDepths = buildPrereqDepths(id);
   selSuccIds   = new Set(edges.filter(e => e.source.id === id).map(e => e.target.id));
-
   const relIds = new Set([...prereqDepths.keys(), ...selSuccIds]);
   selRelEdges  = edges.filter(e => relIds.has(e.source.id) && relIds.has(e.target.id));
 
-  // Clear similarity scores from previous selection before scattering
   nodes.forEach(n => { n._simScore = 0; });
+  const outerR = Math.min(W, H) * 0.46;
+  const djb2 = n => { let h = 5381; for (let i = 0; i < n.id.length; i++) h = ((h << 5) + h + n.id.charCodeAt(i)) | 0; return h; };
 
-  // Scatter all nodes so each selection visibly re-settles from a fresh layout.
+  // Build ring placement / strength functions from current n._simScore values.
+  function buildRingFns() {
+    const bgScores = nodes
+      .filter(n => !prereqDepths.has(n.id) && !selSuccIds.has(n.id))
+      .map(n => n._simScore).sort((a, b) => a - b);
+    const pct = s => { let lo = 0, hi = bgScores.length; while (lo < hi) { const m = (lo + hi) >> 1; bgScores[m] < s ? lo = m + 1 : hi = m; } return lo / bgScores.length; };
+    const ringR = n => { const p = pct(n._simScore ?? 0); const base = p > 0.7 ? 60 + (1 - p) / 0.3 * 220 : outerR; return Math.max(30, base + ((djb2(n) & 0xff) / 127.5 - 1) * 28); };
+    const strength = n => { if (prereqDepths.has(n.id) || selSuccIds.has(n.id)) return 0; const p = pct(n._simScore ?? 0); return p > 0.7 ? Math.min(0.85, 0.3 + (p - 0.7) * 2.75) : 0.15; };
+    return { ringR, strength };
+  }
+
+  // Add similarity forces to sim (must be called after sim is created).
+  function applySimForces(similar) {
+    const fns = buildRingFns();
+    const relSet = new Set([...prereqDepths.keys(), ...selSuccIds]);
+    const relLinks = [];
+    Object.entries(similar).forEach(([sid, score]) => {
+      if (relSet.has(sid) && sid !== id && nodeById[sid])
+        relLinks.push({ source: nodeById[sid], target: selected, score });
+    });
+    if (relLinks.length)
+      sim.force('similarity', d3.forceLink(relLinks).strength(e => e.score * 0.12).distance(e => (1 - e.score) * 200 + 50));
+    sim.force('charge', d3.forceManyBody().strength(n => {
+      const d = prereqDepths.get(n.id);
+      if (d === 0) return -25; if (d === 1) return -100;
+      if (d !== undefined) return -55;
+      if (selSuccIds.has(n.id)) return -100;
+      return -1;
+    }));
+    sim.force('sim-radial', d3.forceRadial(n => prereqDepths.has(n.id) || selSuccIds.has(n.id) ? 0 : fns.ringR(n), W / 2, H / 2).strength(fns.strength));
+    return fns;
+  }
+
+  // Use cached scores if hover-prefetch already fetched them — enables single-stage scatter.
+  const cached = simCache[id];
+  let ringFns = null;
+  if (cached) {
+    nodes.forEach(n => { n._simScore = cached[n.id] ?? 0; });
+    ringFns = buildRingFns();
+  }
+
+  // Scatter all nodes to initial positions.
+  // Background: ring positions if cached, otherwise outerR (scores arrive shortly after).
   nodes.forEach(n => {
     n.fx = null; n.fy = null;
     const d = prereqDepths.get(n.id);
     if (d !== undefined && d > 0) {
-      // Prereqs: near their target x column, randomised y
-      const tx = W / 2 - Math.min(d * 200, W * 0.44);
+      const tx = W / 2 - Math.min(d * 200, W * 0.38);
       n.x = tx + (Math.random() - 0.5) * 140;
       n.y = H / 2 + (Math.random() - 0.5) * H * 0.65;
     } else if (selSuccIds.has(n.id)) {
       n.x = W / 2 + 200 + Math.random() * 120;
       n.y = H / 2 + (Math.random() - 0.5) * H * 0.55;
     } else {
-      // Background: scatter randomly across the canvas
-      n.x = Math.random() * W;
-      n.y = Math.random() * H;
+      const r = ringFns ? ringFns.ringR(n) : outerR * (0.9 + Math.random() * 0.25);
+      const angle = Math.random() * 2 * Math.PI;
+      n.x = W / 2 + Math.cos(angle) * r;
+      n.y = H / 2 + Math.sin(angle) * r;
     }
   });
 
-  // Snap selected node to centre immediately (visible on first frame)
-  selected.x  = W / 2;
-  selected.y  = H / 2;
-  selected.fx = W / 2;
-  selected.fy = H / 2;
-  resetZoom();
+  selected.x = W / 2; selected.y = H / 2; selected.fx = W / 2; selected.fy = H / 2;
+
+  const selScale = 1.1;
+  d3.select(canvas).call(zoomBehavior.transform,
+    d3.zoomIdentity.translate(W / 2 * (1 - selScale), H / 2 * (1 - selScale)).scale(selScale));
 
   stopSim();
   sim = d3.forceSimulation(nodes)
     .force('x', d3.forceX(n => {
       const d = prereqDepths.get(n.id);
       if (d === 0) return W / 2;
-      // Prereqs spread left; cap so deep chains don't vanish off-screen
-      if (d !== undefined) return W / 2 - Math.min(d * 200, W * 0.44);
+      if (d !== undefined) return W / 2 - Math.min(d * 200, W * 0.38);
       if (selSuccIds.has(n.id)) return W / 2 + 240;
       return n.x;
-    }).strength(n =>
-      prereqDepths.has(n.id) || selSuccIds.has(n.id) ? (n === selected ? 1 : 0.45) : 0))
-    .force('y', d3.forceY(H / 2).strength(n =>
-      prereqDepths.has(n.id) || selSuccIds.has(n.id) ? 0.18 : 0))
+    }).strength(n => prereqDepths.has(n.id) || selSuccIds.has(n.id) ? (n === selected ? 1 : 0.45) : 0))
+    .force('y', d3.forceY(H / 2).strength(n => prereqDepths.has(n.id) || selSuccIds.has(n.id) ? 0.18 : 0))
     .force('charge', d3.forceManyBody().strength(n => {
       const d = prereqDepths.get(n.id);
-      if (d === 0) return -200;
+      if (d === 0) return cached ? -25 : -200;
       if (d === 1) return -100;
       if (d !== undefined) return -55;
       if (selSuccIds.has(n.id)) return -100;
-      return -2;
+      return -1;
     }))
     .force('coll', d3.forceCollide(n => {
       const d = prereqDepths.get(n.id);
-      if (d === 0) return 52;
-      if (d === 1) return 42;
+      if (d === 0) return 52; if (d === 1) return 42;
       if (d !== undefined) return 13;
       if (selSuccIds.has(n.id)) return 40;
       return 4;
     }))
-    // sim-x / sim-y are NOT added here — D3 pre-computes strength arrays at
-    // initialize() time, so they must be added AFTER scores land (see async fetch below)
     .alphaDecay(0.02)
     .on('tick', tick);
+
+  if (ringFns) applySimForces(cached);
 
   const total = prereqDepths.size - 1;
   setHint(`${selected.id}  ·  ${total} prerequisite${total !== 1 ? 's' : ''}  ·  enables ${selSuccIds.size}`);
 
-  // Fetch cosine similarity against ALL courses (one matrix multiply server-side).
-  // Scores are written onto each node so the radial force re-evaluates automatically.
-  const snapId = id;
-  fetch(`/api/similar/${id}`).then(r => r.json()).then(({ similar }) => {
-    if (VIEW !== 'SELECTED' || selected?.id !== snapId || !sim) return;
-
-    // Tag every node — similar dict covers all 7,083 courses
-    nodes.forEach(n => { n._simScore = similar[n.id] ?? 0; });
-
-    // Springs for prereq/succ nodes (tighter, existing behaviour)
-    const relSet  = new Set([...prereqDepths.keys(), ...selSuccIds]);
-    const relLinks = [];
-    Object.entries(similar).forEach(([sid, score]) => {
-      if (relSet.has(sid) && sid !== snapId && nodeById[sid])
-        relLinks.push({ source: nodeById[sid], target: selected, score });
-    });
-    if (relLinks.length) {
-      sim.force('similarity', d3.forceLink(relLinks)
-        .strength(e => e.score * 0.12)
-        .distance(e => (1 - e.score) * 200 + 50));
-    }
-
-    // Add sim-x/sim-y NOW — initialize() runs here with real _simScore values baked in.
-    // Same pattern as galaxy dept clustering: shared target point → nodes converge together.
-    sim.force('sim-x', d3.forceX(W / 2).strength(n => {
-      if (prereqDepths.has(n.id) || selSuccIds.has(n.id)) return 0;
-      return Math.max(0, (n._simScore ?? 0) - 0.4) * 0.25;
-    }));
-    sim.force('sim-y', d3.forceY(H / 2).strength(n => {
-      if (prereqDepths.has(n.id) || selSuccIds.has(n.id)) return 0;
-      return Math.max(0, (n._simScore ?? 0) - 0.4) * 0.25;
-    }));
-
-    sim.alpha(0.4).restart();
-  }).catch(() => {});
+  if (!cached) {
+    const snapId = id;
+    fetch(`/api/similar/${encodeURIComponent(id)}`).then(r => r.json()).then(({ similar }) => {
+      simCache[id] = similar;
+      if (VIEW !== 'SELECTED' || selected?.id !== snapId || !sim) return;
+      nodes.forEach(n => { n._simScore = similar[n.id] ?? 0; });
+      const fns = buildRingFns();
+      nodes.forEach(n => {
+        if (prereqDepths.has(n.id) || selSuccIds.has(n.id)) return;
+        const r = fns.ringR(n), angle = Math.random() * 2 * Math.PI;
+        n.x = W / 2 + Math.cos(angle) * r; n.y = H / 2 + Math.sin(angle) * r;
+        n.vx = 0; n.vy = 0;
+      });
+      applySimForces(similar);
+      sim.alpha(0.35).restart();
+    }).catch(() => {});
+  }
 }
 
 
@@ -526,8 +598,9 @@ function nodeR(n) {
     return 3;
   }
   if (VIEW === 'SEARCH') {
-    const s = searchScores[n.id] ?? 0;
-    return s > 0 ? 6 + s * 8 : 3;
+    const rank = searchHitRanks.get(n.id);
+    if (rank !== undefined) return Math.max(7, 14 - rank * 0.37); // rank 0→14px, rank 19→7px
+    return 3;
   }
   return 3;
 }
@@ -567,7 +640,7 @@ function drawEdges() {
       const t = e.target;
       if (!isFinite(t.x)) return;
       const score = searchScores[t.id] ?? 0;
-      ctx.globalAlpha = 0.07 + score * 0.25;
+      ctx.globalAlpha = 0.2 + score * 0.6;
       ctx.beginPath();
       ctx.moveTo(searchQueryNode.x, searchQueryNode.y);
       ctx.lineTo(t.x, t.y);
@@ -676,7 +749,7 @@ function drawLabels() {
     });
   } else if (VIEW === 'SEARCH') {
     nodes.forEach(n => {
-      if (searchScores[n.id] > 0) toLabel.push({ n, big: false, labelDepth: 0 });
+      if (searchHitIds.has(n.id)) toLabel.push({ n, big: false, labelDepth: 0 });
     });
   } else if (hovered && T.k > 2) {
     toLabel.push({ n: hovered, big: false, labelDepth: 0 });
@@ -753,7 +826,7 @@ canvas.addEventListener('mousemove', ev => {
   if (!qt) return;
   const [mx, my] = simXY(ev);
   const found = qt.find(mx, my, 50 / T.k);
-  if (found !== hovered) { hovered = found; draw(); }
+  if (found !== hovered) { hovered = found; draw(); if (found) prefetchSimilarity(found.id); }
   found ? showTip(ev, found) : hideTip();
 });
 
@@ -793,8 +866,9 @@ function showTip(ev, n) {
     else if (d !== undefined) rel = ` · prereq (depth ${d})`;
     else if (selSuccIds.has(n.id)) rel = ' · enabled by this';
     if (d !== 0 && n._simScore > 0) rel += ` · ${Math.round(n._simScore * 100)}% similar`;
-  } else if (VIEW === 'SEARCH' && searchScores[n.id] > 0) {
-    rel = ` · ${Math.round(searchScores[n.id] * 100)}% match`;
+  } else if (VIEW === 'SEARCH') {
+    const s = searchScores[n.id];
+    if (s > 0) rel = ` · ${Math.round(s * 100)}% match`;
   }
   const dept = DEPT_NAMES[n.dept] ? `${n.dept} — ${DEPT_NAMES[n.dept]}` : `Dept. ${n.dept}`;
   document.getElementById('tt-id').textContent    = n.id;
@@ -877,12 +951,14 @@ const searchInput = document.getElementById('search-input');
 
 async function doSearch(q) {
   searchInput.blur();
-  const { courses } = await fetch('/api/search', {
+  setHint('Searching…');
+  setIntentTags([]);
+  const { courses, scores, intent } = await fetch('/api/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: q, n: 10 }),
+    body: JSON.stringify({ query: q, n: 20 }),
   }).then(r => r.json());
-  startSearch(courses, q);
+  startSearch(courses, scores, q, intent);
 }
 
 searchInput.addEventListener('keydown', e => {
@@ -895,8 +971,14 @@ searchInput.addEventListener('keydown', e => {
 // HINT PILL
 // ═══════════════════════════════════════════════════════════════
 
-const hintEl = document.getElementById('hint');
+const hintEl      = document.getElementById('hint');
+const intentTagsEl = document.getElementById('intent-tags');
 function setHint(t) { hintEl.textContent = t ?? ''; hintEl.style.opacity = t ? '1' : '0'; }
+function setIntentTags(topics) {
+  intentTagsEl.innerHTML = (topics?.length)
+    ? topics.map(t => `<span class="intent-tag">${t}</span>`).join('')
+    : '';
+}
 
 
 // ═══════════════════════════════════════════════════════════════
