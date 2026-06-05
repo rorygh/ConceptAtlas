@@ -982,7 +982,6 @@ function applyFilter(filterIds, intent) {
   filterHitIds = new Set(filterIds);
   setFilterChips(intent?.filters ?? {});
   setHint(intent?.explanation || `${filterIds.length} courses matched`);
-  setIntentTags([]);
   draw();
 }
 
