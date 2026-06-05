@@ -464,15 +464,16 @@ function startSelected(id) {
       if (selSuccIds.has(n.id)) return 40;
       return 4;
     }))
-    // Radial force for background nodes — target radius set by _simScore once loaded.
-    // Before scores arrive all background nodes sit at a neutral middle distance.
-    .force('sim-radial', d3.forceRadial(n => {
+    // Pull background nodes toward the selected course proportional to similarity —
+    // same mechanism as galaxy dept clustering (shared target point → real blobs).
+    // Strength 0 for unrelated courses; they stay where the scatter left them.
+    .force('sim-x', d3.forceX(W / 2).strength(n => {
       if (prereqDepths.has(n.id) || selSuccIds.has(n.id)) return 0;
-      const s = n._simScore ?? 0;
-      return 100 + (1 - s) * 500;   // score 1 → 100px out, score 0 → 600px out
-    }, W / 2, H / 2).strength(n => {
+      return Math.max(0, (n._simScore ?? 0) - 0.4) * 0.25;
+    }))
+    .force('sim-y', d3.forceY(H / 2).strength(n => {
       if (prereqDepths.has(n.id) || selSuccIds.has(n.id)) return 0;
-      return 0.04 + (n._simScore ?? 0) * 0.08;  // similar nodes pulled more firmly
+      return Math.max(0, (n._simScore ?? 0) - 0.4) * 0.25;
     }))
     .alphaDecay(0.02)
     .on('tick', tick);
