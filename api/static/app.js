@@ -752,7 +752,7 @@ async function openDetail(id) {
   document.getElementById('d-prereqs').innerHTML = chips(c.prereqs_flat, 'pre');
   const exprEl = document.getElementById('d-prereqs-expr');
   exprEl.textContent = c.prereqs_expr || '';
-  exprEl.style.display = c.prereqs_expr ? '' : 'none';
+  exprEl.style.display = c.prereqs_expr ? 'block' : 'none';
   document.getElementById('d-related').innerHTML = chips(c.related_subjects, '');
 
   document.querySelectorAll('.chip[data-id]').forEach(el => {
@@ -974,7 +974,7 @@ async function init() {
   nodeById = Object.fromEntries(nodes.map(n => [n.id, n]));
 
   edges = graphData.edges
-    .map(e => ({ source: nodeById[e.source], target: nodeById[e.target] }))
+    .map(e => ({ source: nodeById[e.source], target: nodeById[e.target], op: e.op }))
     .filter(e => e.source && e.target);
 
   updateQt();
