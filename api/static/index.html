@@ -934,14 +934,26 @@ canvas.addEventListener('mouseleave', () => { hovered = null; hideTip(); draw();
 const tipEl = document.getElementById('tooltip');
 
 const DEPT_NAMES = {
-  '1':'Civil Eng.','2':'Mech. Eng.','3':'Materials','4':'Architecture',
-  '5':'Chemistry','6':'EECS','7':'Biology','8':'Physics',
-  '9':'Brain & Cog. Sci.','10':'Chem. Eng.','11':'Urban Studies',
-  '12':'Earth & Planetary Sci.','14':'Economics','15':'Sloan',
-  '16':'AeroAstro','17':'Political Sci.','18':'Mathematics',
-  '20':'Biological Eng.','21A':'Anthropology','22':'Nuclear Sci.',
-  '24':'Philosophy','HST':'Health Sci. & Tech.','STS':'Science & Society',
-  'CMS':'Comparative Media','MAS':'Media Arts & Sci.',
+  '1':'Civil & Env. Eng.','2':'Mech. Eng.','3':'Materials Sci.',
+  '4':'Architecture','5':'Chemistry','6':'EECS','7':'Biology',
+  '8':'Physics','9':'Brain & Cog. Sci.','10':'Chem. Eng.',
+  '11':'Urban Studies','12':'Earth & Planetary Sci.','14':'Economics',
+  '15':'Sloan (Management)','16':'AeroAstro','17':'Political Sci.',
+  '18':'Mathematics','20':'Biological Eng.',
+  '21':'Humanities','21A':'Anthropology','21G':'Global Languages',
+  '21H':'History','21L':'Literature','21M':'Music & Theater Arts',
+  '21T':'Theater Arts','21W':'Writing',
+  '22':'Nuclear Sci. & Eng.','24':'Philosophy',
+  'AS':'Air Force ROTC','CC':'Concourse',
+  'CMS':'Comparative Media Studies','CSB':'Computational Systems Bio.',
+  'CSE':'Computational Sci. & Eng.','EC':'Edgerton Center',
+  'EM':'Engineering Management','ES':'Experimental Study',
+  'HST':'Health Sci. & Tech.','IDS':'Data, Systems & Society',
+  'MAD':'Design','MAS':'Media Arts & Sci.',
+  'MS':'Army ROTC','NS':'Naval Science',
+  'SCM':'Supply Chain Mgmt.','SP':'Special Programs',
+  'STS':'Science, Tech. & Society','SWE':'Software Engineering',
+  'WGS':'Women\'s & Gender Studies',
 };
 
 function showTip(ev, n) {
