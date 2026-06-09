@@ -8,7 +8,7 @@ if [ -d "$DEST" ]; then
     echo "==> $DEST already exists, skipping clone"
 else
     echo "==> Cloning repo..."
-    git clone "https://${RUNPOD_GITHUB_TOKEN}@github.com/rorygh/ConceptAtlas.git" "$DEST"
+    git clone "https://github.com/rorygh/ConceptAtlas.git" "$DEST"
 fi
 
 cd "$DEST"
