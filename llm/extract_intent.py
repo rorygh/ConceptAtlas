@@ -9,7 +9,8 @@ _client: anthropic.Anthropic | None = None
 def _get_client() -> anthropic.Anthropic:
     global _client
     if _client is None:
-        _client = anthropic.Anthropic(api_key=os.environ["RUNPOD_ANTHROPIC_API_KEY"])
+        key = os.environ.get("ANTHROPIC_API_KEY") or os.environ["RUNPOD_ANTHROPIC_API_KEY"]
+        _client = anthropic.Anthropic(api_key=key)
     return _client
 
 

@@ -1,19 +1,18 @@
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+FROM python:3.11-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Core requirements
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install uv && \
-    uv pip install --system --no-cache -r /tmp/requirements.txt
+WORKDIR /app
 
-# Vim keybindings in all bash sessions
-RUN echo 'set -o vi' >> /root/.bashrc
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# First-run setup — clone repo + bootstrap data on pod start
-COPY setup.sh /setup.sh
-RUN chmod +x /setup.sh
+COPY . .
+
+# Build data artifacts into the image so startup is instant
+RUN python -m ingest.fetch_mit && \
+    python -m ingest.parse_courses && \
+    python -m ingest.embed_courses
 
 EXPOSE 8000
-WORKDIR /workspace
+CMD ["./start.sh"]
